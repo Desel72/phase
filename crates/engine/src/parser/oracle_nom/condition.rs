@@ -1230,6 +1230,7 @@ fn parse_day_night_condition(input: &str) -> OracleResult<'_, StaticCondition> {
 fn parse_youve_this_turn(input: &str) -> OracleResult<'_, StaticCondition> {
     let (rest, _) = tag("you've ").parse(input)?;
     alt((
+        parse_cast_spell_count_this_turn,
         |input| parse_another_spell_cast_this_turn(input, 2),
         value(
             make_quantity_ge(QuantityRef::CrimesCommittedThisTurn, 1),
@@ -1293,14 +1294,7 @@ fn parse_event_state_conditions(input: &str) -> OracleResult<'_, StaticCondition
         parse_compound_verb_condition,
         // Negated event patterns — must precede positive variants to catch "didn't" prefix.
         parse_you_didnt_this_turn,
-        // "a creature died this turn" (Morbid) → zone-change count >= 1
-        value(
-            make_quantity_ge(creatures_died_this_turn_ref(), 1),
-            alt((
-                tag("a creature died this turn"),
-                tag("a creature died under your control this turn"),
-            )),
-        ),
+        parse_creature_died_this_turn_conditions,
         // "a nonland permanent left the battlefield this turn" (Revolt variant)
         value(
             make_quantity_ge(nonland_permanents_left_battlefield_this_turn_ref(), 1),
@@ -1403,6 +1397,21 @@ fn parse_event_state_conditions(input: &str) -> OracleResult<'_, StaticCondition
         parse_counter_added_this_turn,
         // "no creatures are on the battlefield"
         parse_no_on_battlefield,
+    ))
+    .parse(input)
+}
+
+fn parse_creature_died_this_turn_conditions(input: &str) -> OracleResult<'_, StaticCondition> {
+    alt((
+        parse_died_under_your_control_this_turn,
+        // "a creature died this turn" (Morbid) → zone-change count >= 1
+        value(
+            make_quantity_ge(creatures_died_this_turn_ref(), 1),
+            alt((
+                tag("a creature died this turn"),
+                tag("a creature died under your control this turn"),
+            )),
+        ),
     ))
     .parse(input)
 }
@@ -1810,6 +1819,9 @@ fn parse_opponent_drew_cards_this_turn(input: &str) -> OracleResult<'_, StaticCo
 /// Parse "you cast another spell this turn" / "you cast a [type] spell this turn".
 fn parse_you_cast_spell_this_turn(input: &str) -> OracleResult<'_, StaticCondition> {
     let (rest, _) = alt((tag("you cast "), tag("you've cast "))).parse(input)?;
+    if let Ok((rest, condition)) = parse_spell_count_this_turn(rest) {
+        return Ok((rest, condition));
+    }
     // "another spell this turn" → >= 2
     if let Ok((rest, condition)) = parse_another_spell_this_turn(rest, 2) {
         return Ok((rest, condition));
@@ -1849,6 +1861,70 @@ fn parse_you_cast_spell_this_turn(input: &str) -> OracleResult<'_, StaticConditi
         input,
         nom::error::ErrorKind::Fail,
     )))
+}
+
+fn parse_died_under_your_control_this_turn(input: &str) -> OracleResult<'_, StaticCondition> {
+    let (rest, _) = parse_article(input)?;
+    let (rest, type_text) = take_until(" died under your control this turn").parse(rest)?;
+    let (rest, _) = tag(" died under your control this turn").parse(rest)?;
+    let (filter, leftover) = parse_type_phrase(type_text);
+    if !leftover.trim().is_empty() || filter == TargetFilter::Any {
+        return Err(nom::Err::Error(nom::error::Error::new(
+            input,
+            nom::error::ErrorKind::Fail,
+        )));
+    }
+    Ok((
+        rest,
+        make_quantity_ge(
+            QuantityRef::ZoneChangeCountThisTurn {
+                from: Some(Zone::Battlefield),
+                to: Some(Zone::Graveyard),
+                filter: inject_controller_you(filter),
+            },
+            1,
+        ),
+    ))
+}
+
+fn parse_cast_spell_count_this_turn(input: &str) -> OracleResult<'_, StaticCondition> {
+    let (rest, _) = tag("cast ").parse(input)?;
+    parse_spell_count_this_turn(rest)
+}
+
+fn parse_spell_count_this_turn(input: &str) -> OracleResult<'_, StaticCondition> {
+    let (rest, n) = parse_ge_threshold(input)?;
+    if let Ok((rest, _)) = tag::<_, _, OracleError<'_>>("spells this turn").parse(rest) {
+        return Ok((
+            rest,
+            make_quantity_ge(
+                QuantityRef::SpellsCastThisTurn {
+                    scope: CountScope::Controller,
+                    filter: None,
+                },
+                n,
+            ),
+        ));
+    }
+
+    let (rest, type_text) = take_until(" spells this turn").parse(rest)?;
+    let (rest, _) = tag(" spells this turn").parse(rest)?;
+    let Some(filter) = parse_spell_history_filter(type_text) else {
+        return Err(nom::Err::Error(nom::error::Error::new(
+            input,
+            nom::error::ErrorKind::Fail,
+        )));
+    };
+    Ok((
+        rest,
+        make_quantity_ge(
+            QuantityRef::SpellsCastThisTurn {
+                scope: CountScope::Controller,
+                filter: Some(filter),
+            },
+            n,
+        ),
+    ))
 }
 
 fn parse_opponent_cast_spell_this_turn(input: &str) -> OracleResult<'_, StaticCondition> {
@@ -4159,6 +4235,40 @@ mod tests {
     }
 
     #[test]
+    fn filtered_spell_count_this_turn_counts_controller_spells() {
+        let (rest, c) = parse_inner_condition(
+            "you've cast three or more instant and/or sorcery spells this turn",
+        )
+        .unwrap();
+        assert_eq!(rest, "");
+        match c {
+            StaticCondition::QuantityComparison {
+                lhs:
+                    QuantityExpr::Ref {
+                        qty:
+                            QuantityRef::SpellsCastThisTurn {
+                                scope: CountScope::Controller,
+                                filter: Some(TargetFilter::Or { filters }),
+                            },
+                    },
+                comparator: Comparator::GE,
+                rhs: QuantityExpr::Fixed { value: 3 },
+            } => assert!(
+                filters.iter().any(|filter| matches!(
+                    filter,
+                    TargetFilter::Typed(TypedFilter { type_filters, .. })
+                        if type_filters == &vec![TypeFilter::Instant]
+                )) && filters.iter().any(|filter| matches!(
+                    filter,
+                    TargetFilter::Typed(TypedFilter { type_filters, .. })
+                        if type_filters == &vec![TypeFilter::Sorcery]
+                ))
+            ),
+            other => panic!("expected filtered SpellsCastThisTurn GE 3, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn youve_drawn_two_or_more_cards_this_turn_counts_controller_draws() {
         let (rest, c) = parse_inner_condition("you've drawn two or more cards this turn").unwrap();
         assert_eq!(rest, "");
@@ -4438,6 +4548,40 @@ mod tests {
                 assert_eq!(filter.controller, Some(ControllerRef::You));
             }
             other => panic!("expected controlled creature zone-change count, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_filtered_creature_died_under_your_control() {
+        let (rest, c) =
+            parse_inner_condition("a non-skeleton creature died under your control this turn")
+                .unwrap();
+        assert_eq!(rest, "");
+        match c {
+            StaticCondition::QuantityComparison {
+                lhs:
+                    QuantityExpr::Ref {
+                        qty:
+                            QuantityRef::ZoneChangeCountThisTurn {
+                                from: Some(Zone::Battlefield),
+                                to: Some(Zone::Graveyard),
+                                filter: TargetFilter::Typed(filter),
+                            },
+                    },
+                comparator: Comparator::GE,
+                rhs: QuantityExpr::Fixed { value: 1 },
+            } => {
+                assert!(filter
+                    .type_filters
+                    .iter()
+                    .any(|filter| matches!(filter, TypeFilter::Creature)));
+                assert!(filter.type_filters.iter().any(|filter| matches!(
+                    filter,
+                    TypeFilter::Non(inner) if matches!(inner.as_ref(), TypeFilter::Subtype(subtype) if subtype == "Skeleton")
+                )));
+                assert_eq!(filter.controller, Some(ControllerRef::You));
+            }
+            other => panic!("expected controlled non-Skeleton dies count, got {other:?}"),
         }
     }
 

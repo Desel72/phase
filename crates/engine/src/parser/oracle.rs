@@ -4892,6 +4892,72 @@ mod tests {
     }
 
     #[test]
+    fn parses_activate_only_filtered_spell_count_condition() {
+        use crate::types::ability::{
+            Comparator, CountScope, ParsedCondition, QuantityExpr, QuantityRef,
+        };
+
+        let r = parse(
+            "{R}: Exile this creature, then return it to the battlefield transformed under its owner's control. \
+             Activate only as a sorcery and only if you've cast three or more instant and/or sorcery spells this turn.",
+            "Urabrask",
+            &[],
+            &["Creature"],
+            &[],
+        );
+
+        let restrictions = &r.abilities[0].activation_restrictions;
+        assert!(restrictions.contains(&ActivationRestriction::AsSorcery));
+        assert!(restrictions.iter().any(|restriction| matches!(
+            restriction,
+            ActivationRestriction::RequiresCondition {
+                condition: Some(ParsedCondition::QuantityComparison {
+                    lhs: QuantityExpr::Ref {
+                        qty: QuantityRef::SpellsCastThisTurn {
+                            scope: CountScope::Controller,
+                            filter: Some(TargetFilter::Or { .. }),
+                        },
+                    },
+                    comparator: Comparator::GE,
+                    rhs: QuantityExpr::Fixed { value: 3 },
+                })
+            }
+        )));
+        assert!(r.parse_warnings.is_empty());
+    }
+
+    #[test]
+    fn parses_activate_only_filtered_morbid_condition() {
+        use crate::types::ability::{Comparator, ParsedCondition, QuantityExpr, QuantityRef};
+
+        let r = parse(
+            "{1}{B}: Return this card from your graveyard to the battlefield. \
+             Activate only if a non-Skeleton creature died under your control this turn.",
+            "Cult Conscript",
+            &[],
+            &["Creature"],
+            &["Skeleton", "Warrior"],
+        );
+
+        assert!(r.abilities[0]
+            .activation_restrictions
+            .iter()
+            .any(|restriction| matches!(
+                restriction,
+                ActivationRestriction::RequiresCondition {
+                    condition: Some(ParsedCondition::QuantityComparison {
+                        lhs: QuantityExpr::Ref {
+                            qty: QuantityRef::ZoneChangeCountThisTurn { .. },
+                        },
+                        comparator: Comparator::GE,
+                        rhs: QuantityExpr::Fixed { value: 1 },
+                    })
+                }
+            )));
+        assert!(r.parse_warnings.is_empty());
+    }
+
+    #[test]
     fn parses_activate_only_as_sorcery_and_only_if_hand_size_condition() {
         let r = parse(
             "{2}{B}: Return this card from your graveyard to the battlefield. Activate only as a sorcery and only if you have one or fewer cards in hand.",

@@ -638,6 +638,17 @@ pub(crate) fn evaluate_condition(
                     comparator.evaluate(lhs_val, rhs_val)
                 })
         }
+        ParsedCondition::QuantityComparison {
+            lhs,
+            comparator,
+            rhs,
+        } => {
+            let lhs_val =
+                crate::game::quantity::resolve_quantity_scoped(state, lhs, source_id, player);
+            let rhs_val =
+                crate::game::quantity::resolve_quantity_scoped(state, rhs, source_id, player);
+            comparator.evaluate(lhs_val, rhs_val)
+        }
         ParsedCondition::CreaturesYouControlTotalPowerAtLeast { minimum } => {
             total_power_of_controlled_creatures(state, player) >= *minimum
         }
@@ -1356,6 +1367,102 @@ mod tests {
             PlayerId(1),
             ObjectId(1),
             "you've cast an instant or sorcery spell this turn"
+        ));
+    }
+
+    #[test]
+    fn evaluates_filtered_spell_count_quantity_restriction() {
+        let mut state = crate::types::game_state::GameState::new_two_player(42);
+        state.spells_cast_this_turn_by_player.insert(
+            PlayerId(0),
+            vec![
+                crate::types::game_state::SpellCastRecord {
+                    core_types: vec![CoreType::Instant],
+                    supertypes: Vec::new(),
+                    subtypes: Vec::new(),
+                    keywords: Vec::new(),
+                    colors: Vec::new(),
+                    mana_value: 1,
+                    has_x_in_cost: false,
+                },
+                crate::types::game_state::SpellCastRecord {
+                    core_types: vec![CoreType::Sorcery],
+                    supertypes: Vec::new(),
+                    subtypes: Vec::new(),
+                    keywords: Vec::new(),
+                    colors: Vec::new(),
+                    mana_value: 2,
+                    has_x_in_cost: false,
+                },
+                crate::types::game_state::SpellCastRecord {
+                    core_types: vec![CoreType::Instant],
+                    supertypes: Vec::new(),
+                    subtypes: Vec::new(),
+                    keywords: Vec::new(),
+                    colors: Vec::new(),
+                    mana_value: 3,
+                    has_x_in_cost: false,
+                },
+            ],
+        );
+
+        assert!(parse_and_evaluate_condition(
+            &state,
+            PlayerId(0),
+            ObjectId(1),
+            "you've cast three or more instant and/or sorcery spells this turn"
+        ));
+        assert!(!parse_and_evaluate_condition(
+            &state,
+            PlayerId(1),
+            ObjectId(1),
+            "you've cast three or more instant and/or sorcery spells this turn"
+        ));
+    }
+
+    #[test]
+    fn evaluates_filtered_morbid_quantity_restriction() {
+        let mut state = crate::types::game_state::GameState::new_two_player(42);
+        state
+            .zone_changes_this_turn
+            .push(crate::types::game_state::ZoneChangeRecord {
+                name: "Skeleton".to_string(),
+                core_types: vec![CoreType::Creature],
+                subtypes: vec!["Skeleton".to_string()],
+                controller: PlayerId(0),
+                ..crate::types::game_state::ZoneChangeRecord::test_minimal(
+                    ObjectId(99),
+                    Some(Zone::Battlefield),
+                    Zone::Graveyard,
+                )
+            });
+
+        assert!(!parse_and_evaluate_condition(
+            &state,
+            PlayerId(0),
+            ObjectId(1),
+            "a non-Skeleton creature died under your control this turn"
+        ));
+
+        state
+            .zone_changes_this_turn
+            .push(crate::types::game_state::ZoneChangeRecord {
+                name: "Vampire".to_string(),
+                core_types: vec![CoreType::Creature],
+                subtypes: vec!["Vampire".to_string()],
+                controller: PlayerId(0),
+                ..crate::types::game_state::ZoneChangeRecord::test_minimal(
+                    ObjectId(100),
+                    Some(Zone::Battlefield),
+                    Zone::Graveyard,
+                )
+            });
+
+        assert!(parse_and_evaluate_condition(
+            &state,
+            PlayerId(0),
+            ObjectId(1),
+            "a non-Skeleton creature died under your control this turn"
         ));
     }
 

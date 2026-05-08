@@ -2898,6 +2898,15 @@ pub enum ParsedCondition {
         comparator: Comparator,
         rhs: QuantityRef,
     },
+    /// CR 601.3 / CR 602.5: Generic measurable restriction predicate.
+    /// Mirrors `StaticCondition::QuantityComparison` and `TriggerCondition::QuantityComparison`
+    /// so cast/activation restrictions can reuse `QuantityRef` building blocks instead of
+    /// proliferating one-off condition variants.
+    QuantityComparison {
+        lhs: QuantityExpr,
+        comparator: Comparator,
+        rhs: QuantityExpr,
+    },
     CreaturesYouControlTotalPowerAtLeast {
         minimum: i32,
     },

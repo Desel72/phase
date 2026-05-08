@@ -3,7 +3,7 @@ use std::str::FromStr;
 use crate::parser::oracle_nom::error::OracleError;
 use nom::branch::alt;
 use nom::bytes::complete::{tag, take_until};
-use nom::combinator::value;
+use nom::combinator::{all_consuming, value};
 use nom::sequence::terminated;
 use nom::Parser;
 
@@ -11,7 +11,7 @@ use super::oracle_nom::condition as nom_condition;
 use super::oracle_nom::primitives as nom_primitives;
 use crate::types::ability::{
     Comparator, ControllerRef, ParsedCondition, PlayerFilter, PlayerScope, QuantityRef,
-    TargetFilter, TypeFilter, TypedFilter,
+    StaticCondition, TargetFilter, TypeFilter, TypedFilter,
 };
 use crate::types::card_type::CoreType;
 use crate::types::counter::{parse_counter_type, CounterType};
@@ -141,7 +141,48 @@ fn parse_condition_text(text: &str) -> Option<ParsedCondition> {
             count: count as u32,
         });
     }
+    if let Some(condition) = parse_quantity_restriction_condition(text) {
+        return Some(condition);
+    }
     None
+}
+
+fn parse_quantity_restriction_condition(text: &str) -> Option<ParsedCondition> {
+    let (_rest, condition) = all_consuming(nom_condition::parse_inner_condition)
+        .parse(text)
+        .ok()?;
+    static_condition_to_restriction_condition(condition)
+}
+
+fn static_condition_to_restriction_condition(
+    condition: StaticCondition,
+) -> Option<ParsedCondition> {
+    match condition {
+        StaticCondition::QuantityComparison {
+            lhs,
+            comparator,
+            rhs,
+        } => Some(ParsedCondition::QuantityComparison {
+            lhs,
+            comparator,
+            rhs,
+        }),
+        StaticCondition::And { conditions } => conditions
+            .into_iter()
+            .map(static_condition_to_restriction_condition)
+            .collect::<Option<Vec<_>>>()
+            .map(|conditions| ParsedCondition::And { conditions }),
+        StaticCondition::Or { conditions } => conditions
+            .into_iter()
+            .map(static_condition_to_restriction_condition)
+            .collect::<Option<Vec<_>>>()
+            .map(|conditions| ParsedCondition::Or { conditions }),
+        StaticCondition::Not { condition } => static_condition_to_restriction_condition(*condition)
+            .map(|condition| ParsedCondition::Not {
+                condition: Box::new(condition),
+            }),
+        _ => None,
+    }
 }
 
 fn parse_source_condition(text: &str) -> Option<ParsedCondition> {
@@ -970,7 +1011,7 @@ fn capitalize_condition_word(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::ability::FilterProp;
+    use crate::types::ability::{CountScope, FilterProp, QuantityExpr};
 
     #[test]
     fn parses_source_conditions() {
@@ -1129,6 +1170,37 @@ mod tests {
             parse_restriction_condition("a creature died this turn"),
             Some(ParsedCondition::CreatureDiedThisTurn),
         );
+    }
+
+    #[test]
+    fn parses_quantity_restriction_conditions() {
+        assert!(matches!(
+            parse_restriction_condition(
+                "you've cast three or more instant and/or sorcery spells this turn"
+            ),
+            Some(ParsedCondition::QuantityComparison {
+                lhs: QuantityExpr::Ref {
+                    qty: QuantityRef::SpellsCastThisTurn {
+                        scope: CountScope::Controller,
+                        filter: Some(TargetFilter::Or { .. }),
+                    },
+                },
+                comparator: Comparator::GE,
+                rhs: QuantityExpr::Fixed { value: 3 },
+            })
+        ));
+        assert!(matches!(
+            parse_restriction_condition(
+                "a non-skeleton creature died under your control this turn"
+            ),
+            Some(ParsedCondition::QuantityComparison {
+                lhs: QuantityExpr::Ref {
+                    qty: QuantityRef::ZoneChangeCountThisTurn { .. },
+                },
+                comparator: Comparator::GE,
+                rhs: QuantityExpr::Fixed { value: 1 },
+            })
+        ));
     }
 
     #[test]
