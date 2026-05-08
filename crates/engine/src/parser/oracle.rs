@@ -5231,6 +5231,117 @@ mod tests {
     }
 
     #[test]
+    fn conditional_modal_max_supports_additional_cost_paid_condition() {
+        let r = parse(
+            "Choose one. If this spell's additional cost was paid, choose both instead.\n• Destroy target artifact.\n• Destroy target creature with mana value 3 or greater.",
+            "Blight Test",
+            &[],
+            &["Sorcery"],
+            &[],
+        );
+        let modal = r.modal.expect("should have modal metadata");
+        assert_eq!(modal.min_choices, 1);
+        assert_eq!(modal.max_choices, 1);
+        assert_eq!(modal.mode_count, 2);
+        assert!(matches!(
+            modal.constraints[0],
+            ModalSelectionConstraint::ConditionalMaxChoices {
+                condition: crate::types::ability::ModalSelectionCondition::AdditionalCostPaid {
+                    variant: None,
+                    kicker_cost: None,
+                    min_count: 1,
+                },
+                max_choices: 2,
+                otherwise_max_choices: 1,
+            }
+        ));
+        assert!(r.parse_warnings.is_empty());
+    }
+
+    #[test]
+    fn conditional_modal_max_supports_life_threshold_conditions() {
+        let exact = parse(
+            "Choose one. If you have exactly 13 life, you may choose both instead.\n• Draw a card.\n• Gain 3 life.",
+            "Life Test",
+            &[],
+            &["Instant"],
+            &[],
+        );
+        let modal = exact.modal.expect("should have modal metadata");
+        assert!(matches!(
+            modal.constraints[0],
+            ModalSelectionConstraint::ConditionalMaxChoices {
+                condition: crate::types::ability::ModalSelectionCondition::Static {
+                    condition: StaticCondition::QuantityComparison {
+                        comparator: Comparator::EQ,
+                        ..
+                    },
+                },
+                max_choices: 2,
+                otherwise_max_choices: 1,
+            }
+        ));
+        assert!(exact.parse_warnings.is_empty());
+
+        let opponent_gap = parse(
+            "Choose one. If an opponent has at least 5 more life than you, choose any number instead.\n• Draw a card.\n• Gain 3 life.\n• Scry 1.",
+            "Catch Up Test",
+            &[],
+            &["Sorcery"],
+            &[],
+        );
+        let modal = opponent_gap.modal.expect("should have modal metadata");
+        assert!(matches!(
+            modal.constraints[0],
+            ModalSelectionConstraint::ConditionalMaxChoices {
+                condition: crate::types::ability::ModalSelectionCondition::Static {
+                    condition: StaticCondition::QuantityComparison {
+                        comparator: Comparator::GE,
+                        ..
+                    },
+                },
+                max_choices: 3,
+                otherwise_max_choices: 1,
+            }
+        ));
+        assert!(opponent_gap.parse_warnings.is_empty());
+    }
+
+    #[test]
+    fn triggered_conditional_modal_max_supports_dash_delimiter() {
+        let r = parse(
+            "When this creature enters, choose one. If an opponent has at least 5 more life than you, choose any number instead—\n• Draw a card.\n• Gain 3 life.\n• Scry 1.",
+            "Catch Up Test",
+            &[],
+            &["Creature"],
+            &[],
+        );
+        let trigger = r.triggers.first().expect("should have trigger");
+        let execute = trigger
+            .execute
+            .as_deref()
+            .expect("should have modal execute");
+        let modal = execute.modal.as_ref().expect("should have modal metadata");
+        assert_eq!(modal.min_choices, 1);
+        assert_eq!(modal.max_choices, 1);
+        assert_eq!(modal.mode_count, 3);
+        assert!(matches!(
+            modal.constraints[0],
+            ModalSelectionConstraint::ConditionalMaxChoices {
+                condition: crate::types::ability::ModalSelectionCondition::Static {
+                    condition: StaticCondition::QuantityComparison {
+                        comparator: Comparator::GE,
+                        ..
+                    },
+                },
+                max_choices: 3,
+                otherwise_max_choices: 1,
+            }
+        ));
+        assert!(r.parse_warnings.is_empty());
+    }
+
+    #[test]
     fn spell_temporal_whenever_line_builds_delayed_trigger() {
         let r = parse(
             "Whenever you cast a creature spell this turn, draw a card.",

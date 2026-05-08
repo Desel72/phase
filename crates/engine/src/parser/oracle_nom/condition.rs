@@ -584,6 +584,22 @@ fn parse_you_have_conditions(input: &str) -> OracleResult<'_, StaticCondition> {
         ));
     }
 
+    // "you have exactly N life" → LifeTotal EQ N
+    if let Ok((rest, _)) = tag::<_, _, OracleError<'_>>("exactly ").parse(rest) {
+        let (rest, n) = parse_number(rest)?;
+        let (rest, _) = tag(" life").parse(rest)?;
+        return Ok((
+            rest,
+            make_quantity_comparison(
+                QuantityRef::LifeTotal {
+                    player: PlayerScope::Controller,
+                },
+                Comparator::EQ,
+                n,
+            ),
+        ));
+    }
+
     // "you have N or more [quantity-suffix]"
     let (rest, n) = parse_number(rest)?;
 
@@ -2424,6 +2440,33 @@ fn parse_opponent_comparison_conditions(input: &str) -> OracleResult<'_, StaticC
         ));
     }
 
+    // "an opponent has at least N more life than you"
+    if let Ok((rest2, _)) = tag::<_, _, OracleError<'_>>("has at least ").parse(rest) {
+        let (rest2, n) = parse_number(rest2)?;
+        let (rest2, _) = tag(" more life than you").parse(rest2)?;
+        return Ok((
+            rest2,
+            StaticCondition::QuantityComparison {
+                lhs: QuantityExpr::Ref {
+                    qty: QuantityRef::LifeTotal {
+                        player: PlayerScope::Opponent {
+                            aggregate: AggregateFunction::Max,
+                        },
+                    },
+                },
+                comparator: Comparator::GE,
+                rhs: QuantityExpr::Offset {
+                    inner: Box::new(QuantityExpr::Ref {
+                        qty: QuantityRef::LifeTotal {
+                            player: PlayerScope::Controller,
+                        },
+                    }),
+                    offset: n as i32,
+                },
+            },
+        ));
+    }
+
     // "an opponent has more cards in hand than you"
     if let Ok((rest2, _)) =
         tag::<_, _, OracleError<'_>>("has more cards in hand than you").parse(rest)
@@ -3327,6 +3370,26 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_you_have_exactly_life() {
+        let (rest, c) = parse_inner_condition("you have exactly 13 life").unwrap();
+        assert_eq!(rest, "");
+        match c {
+            StaticCondition::QuantityComparison {
+                lhs:
+                    QuantityExpr::Ref {
+                        qty:
+                            QuantityRef::LifeTotal {
+                                player: PlayerScope::Controller,
+                            },
+                    },
+                comparator: Comparator::EQ,
+                rhs: QuantityExpr::Fixed { value: 13 },
+            } => {}
+            other => panic!("expected LifeTotal EQ 13, got {other:?}"),
+        }
+    }
+
     /// CR 107.1a + CR 603.4: "there are N X" without "or more" → exact-value
     /// comparison (EQ). Motivating card: A-Nael, Avizoa Aeronaut ("Then if there
     /// are five basic land types among lands you control, draw a card").
@@ -3904,6 +3967,38 @@ mod tests {
                     },
             } => {}
             other => panic!("expected OpponentLifeTotal GT LifeTotal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_opponent_has_at_least_n_more_life() {
+        let (rest, c) =
+            parse_inner_condition("an opponent has at least 5 more life than you").unwrap();
+        assert_eq!(rest, "");
+        match c {
+            StaticCondition::QuantityComparison {
+                lhs:
+                    QuantityExpr::Ref {
+                        qty:
+                            QuantityRef::LifeTotal {
+                                player:
+                                    PlayerScope::Opponent {
+                                        aggregate: AggregateFunction::Max,
+                                    },
+                            },
+                    },
+                comparator: Comparator::GE,
+                rhs: QuantityExpr::Offset { inner, offset: 5 },
+            } => match inner.as_ref() {
+                QuantityExpr::Ref {
+                    qty:
+                        QuantityRef::LifeTotal {
+                            player: PlayerScope::Controller,
+                        },
+                } => {}
+                other => panic!("expected controller life total offset base, got {other:?}"),
+            },
+            other => panic!("expected OpponentLifeTotal GE LifeTotal+5, got {other:?}"),
         }
     }
 

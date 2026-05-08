@@ -285,7 +285,7 @@ fn parse_conditional_modal_max(
     let (rest, _) = tag(" ").parse(rest)?;
     let (rest, _) = opt(tag("you may ")).parse(rest)?;
     let (rest, max_choices) = parse_modal_override_count(rest)?;
-    let (rest, _) = opt(tag(".")).parse(rest)?;
+    let (rest, _) = opt(alt((tag("."), tag("—")))).parse(rest)?;
     Ok((rest, (condition, max_choices)))
 }
 
@@ -323,6 +323,19 @@ fn parse_modal_static_condition(
 fn parse_modal_additional_cost_condition(
     input: &str,
 ) -> nom::IResult<&str, ModalSelectionCondition, OracleError<'_>> {
+    if let Ok((rest, _)) =
+        tag::<_, _, OracleError<'_>>("this spell's additional cost was paid").parse(input)
+    {
+        return Ok((
+            rest,
+            ModalSelectionCondition::AdditionalCostPaid {
+                variant: None,
+                kicker_cost: None,
+                min_count: 1,
+            },
+        ));
+    }
+
     let (rest, _) = alt((
         tag("this spell was kicked"),
         tag("it was kicked"),
