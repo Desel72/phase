@@ -1385,6 +1385,8 @@ fn parse_event_state_conditions(input: &str) -> OracleResult<'_, StaticCondition
 
 fn parse_zone_history_condition(input: &str) -> OracleResult<'_, StaticCondition> {
     alt((
+        parse_card_left_your_graveyard_this_turn,
+        parse_permanent_put_into_your_hand_from_battlefield_this_turn,
         parse_card_put_into_your_graveyard_from_anywhere_this_turn,
         parse_creature_died_this_turn_conditions,
         // "a nonland permanent left the battlefield this turn" (Revolt variant)
@@ -1421,6 +1423,49 @@ fn parse_zone_history_condition(input: &str) -> OracleResult<'_, StaticCondition
     .parse(input)
 }
 
+fn parse_card_left_your_graveyard_this_turn(input: &str) -> OracleResult<'_, StaticCondition> {
+    value(
+        make_quantity_ge(
+            QuantityRef::ZoneChangeCountThisTurn {
+                from: Some(Zone::Graveyard),
+                to: None,
+                filter: add_owned_you_non_token(TargetFilter::Any),
+            },
+            1,
+        ),
+        tag("a card left your graveyard this turn"),
+    )
+    .parse(input)
+}
+
+fn parse_permanent_put_into_your_hand_from_battlefield_this_turn(
+    input: &str,
+) -> OracleResult<'_, StaticCondition> {
+    let (rest, _) = parse_article(input)?;
+    let (rest, type_text) =
+        take_until(" was put into your hand from the battlefield this turn").parse(rest)?;
+    let (rest, _) = tag(" was put into your hand from the battlefield this turn").parse(rest)?;
+    let (filter, leftover) = parse_type_phrase(type_text.trim());
+    if !leftover.trim().is_empty() || filter == TargetFilter::Any {
+        return Err(nom::Err::Error(nom::error::Error::new(
+            input,
+            nom::error::ErrorKind::Fail,
+        )));
+    }
+
+    Ok((
+        rest,
+        make_quantity_ge(
+            QuantityRef::ZoneChangeCountThisTurn {
+                from: Some(Zone::Battlefield),
+                to: Some(Zone::Hand),
+                filter: add_owned_you(filter),
+            },
+            1,
+        ),
+    ))
+}
+
 fn parse_card_put_into_your_graveyard_from_anywhere_this_turn(
     input: &str,
 ) -> OracleResult<'_, StaticCondition> {
@@ -1449,6 +1494,29 @@ fn parse_card_put_into_your_graveyard_from_anywhere_this_turn(
     ))
 }
 
+fn add_owned_you(filter: TargetFilter) -> TargetFilter {
+    match filter {
+        TargetFilter::Typed(mut typed) => {
+            if !typed
+                .properties
+                .iter()
+                .any(|property| matches!(property, FilterProp::Owned { .. }))
+            {
+                typed.properties.push(FilterProp::Owned {
+                    controller: ControllerRef::You,
+                });
+            }
+            TargetFilter::Typed(typed)
+        }
+        TargetFilter::Any => {
+            TargetFilter::Typed(TypedFilter::default().properties(vec![FilterProp::Owned {
+                controller: ControllerRef::You,
+            }]))
+        }
+        other => other,
+    }
+}
+
 fn add_owned_you_non_token(filter: TargetFilter) -> TargetFilter {
     match filter {
         TargetFilter::Typed(mut typed) => {
@@ -1470,6 +1538,12 @@ fn add_owned_you_non_token(filter: TargetFilter) -> TargetFilter {
             }
             TargetFilter::Typed(typed)
         }
+        TargetFilter::Any => TargetFilter::Typed(TypedFilter::default().properties(vec![
+            FilterProp::Owned {
+                controller: ControllerRef::You,
+            },
+            FilterProp::NonToken,
+        ])),
         other => other,
     }
 }
@@ -5469,6 +5543,72 @@ mod tests {
             other => {
                 panic!("expected owned creature-card graveyard zone-change count, got {other:?}")
             }
+        }
+    }
+
+    #[test]
+    fn test_card_left_your_graveyard_this_turn() {
+        let (rest, c) = parse_inner_condition("a card left your graveyard this turn").unwrap();
+        assert_eq!(rest, "");
+        match c {
+            StaticCondition::QuantityComparison {
+                lhs:
+                    QuantityExpr::Ref {
+                        qty:
+                            QuantityRef::ZoneChangeCountThisTurn {
+                                from: Some(Zone::Graveyard),
+                                to: None,
+                                filter: TargetFilter::Typed(filter),
+                            },
+                    },
+                comparator: Comparator::GE,
+                rhs: QuantityExpr::Fixed { value: 1 },
+            } => {
+                assert!(filter.properties.iter().any(|property| matches!(
+                    property,
+                    FilterProp::Owned {
+                        controller: ControllerRef::You
+                    }
+                )));
+                assert!(filter
+                    .properties
+                    .iter()
+                    .any(|property| matches!(property, FilterProp::NonToken)));
+            }
+            other => panic!("expected owned-card graveyard leave count, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_permanent_put_into_your_hand_from_battlefield_this_turn() {
+        let (rest, c) = parse_inner_condition(
+            "a permanent was put into your hand from the battlefield this turn",
+        )
+        .unwrap();
+        assert_eq!(rest, "");
+        match c {
+            StaticCondition::QuantityComparison {
+                lhs:
+                    QuantityExpr::Ref {
+                        qty:
+                            QuantityRef::ZoneChangeCountThisTurn {
+                                from: Some(Zone::Battlefield),
+                                to: Some(Zone::Hand),
+                                filter: TargetFilter::Typed(filter),
+                            },
+                    },
+                comparator: Comparator::GE,
+                rhs: QuantityExpr::Fixed { value: 1 },
+            } => {
+                assert!(filter.type_filters.contains(&TypeFilter::Permanent));
+                assert!(filter.properties.iter().any(|property| matches!(
+                    property,
+                    FilterProp::Owned {
+                        controller: ControllerRef::You
+                    }
+                )));
+            }
+            other => panic!("expected owned permanent battlefield-to-hand count, got {other:?}"),
         }
     }
 

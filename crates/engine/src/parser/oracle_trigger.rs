@@ -8375,6 +8375,70 @@ mod tests {
         );
     }
 
+    #[test]
+    fn trigger_intervening_if_card_left_your_graveyard_this_turn() {
+        let def = parse_trigger_line(
+            "At the beginning of your end step, if a card left your graveyard this turn, draw a card.",
+            "Primary Research",
+        );
+        assert_eq!(def.mode, TriggerMode::Phase);
+        assert_eq!(def.phase, Some(Phase::End));
+        let Some(TriggerCondition::QuantityComparison {
+            lhs,
+            comparator,
+            rhs,
+        }) = &def.condition
+        else {
+            panic!(
+                "expected QuantityComparison intervening-if, got {:?}",
+                def.condition
+            );
+        };
+        assert_eq!(*comparator, Comparator::GE);
+        assert_eq!(*rhs, QuantityExpr::Fixed { value: 1 });
+        assert!(matches!(
+            lhs,
+            QuantityExpr::Ref {
+                qty: QuantityRef::ZoneChangeCountThisTurn {
+                    from: Some(Zone::Graveyard),
+                    to: None,
+                    ..
+                }
+            }
+        ));
+    }
+
+    #[test]
+    fn trigger_intervening_if_permanent_was_put_into_your_hand_from_battlefield() {
+        let def = parse_trigger_line(
+            "At the beginning of your end step, if a permanent was put into your hand from the battlefield this turn, draw a card.",
+            "Barrin, Tolarian Archmage",
+        );
+        let Some(TriggerCondition::QuantityComparison {
+            lhs,
+            comparator,
+            rhs,
+        }) = &def.condition
+        else {
+            panic!(
+                "expected QuantityComparison intervening-if, got {:?}",
+                def.condition
+            );
+        };
+        assert_eq!(*comparator, Comparator::GE);
+        assert_eq!(*rhs, QuantityExpr::Fixed { value: 1 });
+        assert!(matches!(
+            lhs,
+            QuantityExpr::Ref {
+                qty: QuantityRef::ZoneChangeCountThisTurn {
+                    from: Some(Zone::Battlefield),
+                    to: Some(Zone::Hand),
+                    ..
+                }
+            }
+        ));
+    }
+
     // --- ControlCount condition tests ---
 
     #[test]
