@@ -96,6 +96,21 @@ If new messages exist, re-run extract → triage → render and review new items
 bun scripts/sync-bug-reports.ts render
 ```
 
+## Oracle Text Sourcing — MANDATORY
+
+**Every Oracle text reference in a GitHub issue, comment, or triage note MUST be copied verbatim from `client/public/card-data.json`.** Never quote Oracle text from memory, the user's Discord message, Scryfall, or training data. The card database is the only authoritative source — using anything else risks filing issues against the wrong card text and wasting fix cycles.
+
+```bash
+# REQUIRED before quoting Oracle text in any issue body or comment:
+jq -r '.["card name"] | .oracle_text' client/public/card-data.json
+```
+
+If `oracle_text` is `null` or the card key is missing, do NOT guess — flag the card-data lookup failure in the issue and stop. A missing entry is itself a bug worth reporting (likely a card-data pipeline gap).
+
+When filing or updating an issue, include an explicit **Oracle text (verified from `client/public/card-data.json`)** section quoting the text you looked up. This makes the verification visible to reviewers and prevents downstream agents from re-introducing wrong text.
+
+If you discover an existing issue references wrong Oracle text, fix it as part of the next triage pass — wrong card text in an issue is worse than no quote, because it sends fixers chasing the wrong semantics.
+
 ## Investigating Whether a Bug Is Fixed
 
 ### Evidence Standard

@@ -1099,6 +1099,9 @@ export interface GameState {
   eliminated_players?: PlayerId[];
   dungeon_progress?: Record<string, { current_dungeon: DungeonId | null; current_room: number; completed: DungeonId[] }>;
   initiative?: PlayerId | null;
+  monarch?: PlayerId | null;
+  city_blessing?: PlayerId[];
+  ring_level?: Record<string, number>;
   commander_damage?: CommanderDamageEntry[];
   exile_links?: Array<{ exiled_id: ObjectId; source_id: ObjectId }>;
   match_config?: MatchConfig;
