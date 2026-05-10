@@ -16,7 +16,7 @@ use crate::types::identifiers::ObjectId;
 use crate::types::keywords::WardCost;
 use crate::types::keywords::{Keyword, KeywordKind};
 use crate::types::phase::Phase;
-use crate::types::player::{Player, PlayerId};
+use crate::types::player::{Player, PlayerCounterKind, PlayerId};
 use crate::types::statics::{StaticMode, TriggerCause};
 use crate::types::triggers::TriggerMode;
 use crate::types::zones::Zone;
@@ -1232,6 +1232,49 @@ pub fn process_triggers(state: &mut GameState, events: &[GameEvent]) {
                     may_trigger_origin: None,
                 }));
                 mark_speed_trigger_used(state, trigger_controller);
+            }
+        }
+
+        // CR 728.1: At the beginning of each player's precombat main phase,
+        // if that player has one or more rad counters, that player mills cards
+        // equal to their rad counter count. For each nonland card milled,
+        // that player loses 1 life and removes one rad counter.
+        // Note: "each player's precombat main phase" — since only the active
+        // player's precombat main phase fires at any given time, checking
+        // state.active_player is equivalent. Same pattern as monarch (CR 725.2).
+        if let GameEvent::PhaseChanged {
+            phase: Phase::PreCombatMain,
+        } = event
+        {
+            let active = state.active_player;
+            let rad_count = state
+                .players
+                .iter()
+                .find(|p| p.id == active)
+                .map(|p| p.player_counter(&PlayerCounterKind::Rad))
+                .unwrap_or(0);
+            if rad_count > 0 {
+                let rad_ability = ResolvedAbility::new(
+                    Effect::ProcessRadCounters,
+                    Vec::new(),
+                    ObjectId(0),
+                    active,
+                );
+                let trig_def = TriggerDefinition::new(TriggerMode::Phase)
+                    .description("Rad counters (CR 728.1)".to_string());
+                pending.push(PendingTriggerContext::single(PendingTrigger {
+                    source_id: ObjectId(0),
+                    controller: active,
+                    condition: trig_def.condition,
+                    ability: rad_ability,
+                    timestamp: 0,
+                    target_constraints: Vec::new(),
+                    trigger_event: Some(event.clone()),
+                    modal: None,
+                    mode_abilities: vec![],
+                    description: None,
+                    may_trigger_origin: None,
+                }));
             }
         }
     }

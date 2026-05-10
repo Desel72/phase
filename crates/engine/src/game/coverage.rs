@@ -1985,6 +1985,7 @@ fn effect_details(effect: &Effect) -> Vec<(String, String)> {
         | Effect::VentureIntoDungeon
         | Effect::VentureInto { .. }
         | Effect::TakeTheInitiative
+        | Effect::ProcessRadCounters
         | Effect::Clash
         | Effect::Vote { .. }
         | Effect::Incubate { .. }

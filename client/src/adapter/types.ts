@@ -524,6 +524,7 @@ export interface Player {
    * commander or has only a colorless commander (CR 903.4f).
    */
   commander_color_identity?: ManaColor[];
+  player_counters?: Record<string, number>;
 }
 
 // ── Target Filter ───────────────────────────────────────────────────────

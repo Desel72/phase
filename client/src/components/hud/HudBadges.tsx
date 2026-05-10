@@ -23,7 +23,7 @@ export function StatusBadge({
   );
 }
 
-type CounterBadgeKind = "poison" | "speed";
+type CounterBadgeKind = "poison" | "speed" | "rad";
 
 interface CounterBadgeProps {
   kind: CounterBadgeKind;
@@ -31,21 +31,14 @@ interface CounterBadgeProps {
 }
 
 export function CounterBadge({ kind, value }: CounterBadgeProps) {
-  const isPoison = kind === "poison";
-  const label = isPoison
-    ? `${value} poison counter${value === 1 ? "" : "s"}`
-    : `Speed ${value}`;
-  const title = isPoison ? `Poison counters: ${value}` : `Speed: ${value}`;
-  const urgent = isPoison && value >= 8;
-
-  if (isPoison) {
+  if (kind === "poison") {
     return (
       <span
         role="img"
-        aria-label={label}
-        title={title}
+        aria-label={`${value} poison counter${value === 1 ? "" : "s"}`}
+        title={`Poison counters: ${value}`}
         className={`relative inline-flex h-6 min-w-6 shrink-0 items-center justify-center overflow-hidden rounded-full px-1 text-[11px] font-black leading-none tabular-nums text-lime-950 ring-1 ${
-          urgent
+          value >= 8
             ? "bg-lime-300 ring-lime-100 shadow-[0_0_16px_rgba(217,249,157,0.55)]"
             : "bg-lime-400 ring-lime-200/70 shadow-[0_0_12px_rgba(190,242,100,0.34)]"
         }`}
@@ -63,11 +56,36 @@ export function CounterBadge({ kind, value }: CounterBadgeProps) {
     );
   }
 
+  if (kind === "rad") {
+    return (
+      <span
+        role="img"
+        aria-label={`${value} rad counter${value === 1 ? "" : "s"}`}
+        title={`Rad counters: ${value}`}
+        className={`relative inline-flex h-6 min-w-6 shrink-0 items-center justify-center gap-px overflow-hidden rounded-full px-1 text-[11px] font-black leading-none tabular-nums text-amber-950 ring-1 ${
+          value >= 8
+            ? "bg-amber-300 ring-amber-100 shadow-[0_0_16px_rgba(252,211,77,0.55)]"
+            : "bg-amber-500 ring-amber-300/70 shadow-[0_0_12px_rgba(245,158,11,0.4)]"
+        }`}
+      >
+        <span
+          aria-hidden
+          className="absolute inset-0 rounded-full bg-[radial-gradient(circle_at_30%_24%,rgba(255,255,255,0.85)_0_9%,transparent_11%),radial-gradient(circle_at_68%_30%,rgba(254,243,199,0.9)_0_7%,transparent_9%),radial-gradient(circle_at_38%_74%,rgba(217,119,6,0.72)_0_11%,transparent_13%),linear-gradient(135deg,#fffbeb_0%,#fbbf24_36%,#b45309_72%,#451a03_100%)]"
+        />
+        <span
+          aria-hidden
+          className="absolute -bottom-1 left-1/2 h-3 w-5 -translate-x-1/2 rounded-[45%] bg-amber-950/28 blur-[1px]"
+        />
+        <span className="relative">☢{value}</span>
+      </span>
+    );
+  }
+
   return (
     <span
       role="img"
-      aria-label={label}
-      title={title}
+      aria-label={`Speed ${value}`}
+      title={`Speed: ${value}`}
       className="relative inline-flex h-6 min-w-6 shrink-0 items-center justify-center overflow-hidden rounded-[6px] px-1 text-[11px] font-black leading-none tabular-nums text-white ring-1 ring-slate-100/60 shadow-[0_0_10px_rgba(226,232,240,0.22)]"
     >
       <span

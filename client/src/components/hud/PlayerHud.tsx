@@ -16,6 +16,7 @@ export function PlayerHud() {
   const isMyTurn = useGameStore((s) => s.gameState?.active_player === playerId);
   const speed = useGameStore((s) => s.gameState?.players[playerId]?.speed ?? 0);
   const poisonCounters = useGameStore((s) => s.gameState?.players[playerId]?.poison_counters ?? 0);
+  const radCounters = useGameStore((s) => s.gameState?.players[playerId]?.player_counters?.Rad ?? 0);
   const isPhasedOut = useGameStore(
     (s) => s.gameState?.players[playerId]?.status?.type === "PhasedOut",
   );
@@ -68,6 +69,7 @@ export function PlayerHud() {
             {showMatchScore && matchScore ? <ScoreBadge score={matchScore} player={0} /> : null}
             {isPhasedOut ? <StatusBadge label="Phased Out" tone="neutral" /> : null}
             {poisonCounters > 0 ? <CounterBadge kind="poison" value={poisonCounters} /> : null}
+            {radCounters > 0 ? <CounterBadge kind="rad" value={radCounters} /> : null}
             {speed > 0 ? <CounterBadge kind="speed" value={speed} /> : null}
           </>
         }

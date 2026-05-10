@@ -148,6 +148,7 @@ export function OpponentHud({ opponentName, onKickPlayer }: OpponentHudProps) {
     const opponentCompanion = gameState?.players[opponentId]?.companion;
     const opponentSpeed = gameState?.players[opponentId]?.speed ?? 0;
     const opponentPoisonCounters = gameState?.players[opponentId]?.poison_counters ?? 0;
+    const opponentRadCounters = gameState?.players[opponentId]?.player_counters?.Rad ?? 0;
     const isDisconnected = isOnline && disconnectedPlayers.has(opponentId);
     const isOpponentPhasedOut =
       gameState?.players[opponentId]?.status?.type === "PhasedOut";
@@ -178,11 +179,12 @@ export function OpponentHud({ opponentName, onKickPlayer }: OpponentHudProps) {
           underAttack={isOpponentUnderAttack}
           avatarUrl={opponentAvatarUrl}
           onClick={isValidTarget ? () => handlePlayerTarget(opponentId) : undefined}
-          trailing={matchScore || opponentPoisonCounters > 0 || opponentSpeed > 0 || opponentCompanion || isOnline || isOpponentPhasedOut ? (
+          trailing={matchScore || opponentPoisonCounters > 0 || opponentRadCounters > 0 || opponentSpeed > 0 || opponentCompanion || isOnline || isOpponentPhasedOut ? (
             <>
               {matchScore ? <ScoreBadge score={matchScore} player={1} /> : null}
               {isOpponentPhasedOut ? <StatusBadge label="Phased Out" tone="neutral" /> : null}
               {opponentPoisonCounters > 0 ? <CounterBadge kind="poison" value={opponentPoisonCounters} /> : null}
+              {opponentRadCounters > 0 ? <CounterBadge kind="rad" value={opponentRadCounters} /> : null}
               {opponentSpeed > 0 ? <CounterBadge kind="speed" value={opponentSpeed} /> : null}
               {opponentCompanion ? <StatusBadge label="Companion" /> : null}
               {isOnline ? <ConnectionDotInline disconnected={isDisconnected} /> : null}
@@ -368,6 +370,7 @@ function OpponentTab({ playerId, isFocused, isEliminated, isTeammate: ally, isVa
   const handCount = player.hand.length;
   const speed = player.speed ?? 0;
   const poisonCounters = player.poison_counters;
+  const radCounters = player.player_counters?.Rad ?? 0;
   const isPhasedOut = player.status?.type === "PhasedOut";
 
   const label = ally ? "Ally" : getOpponentDisplayName(playerId);
@@ -449,6 +452,7 @@ function OpponentTab({ playerId, isFocused, isEliminated, isTeammate: ally, isVa
             {player.life}
           </span>
           {poisonCounters > 0 ? <CounterBadge kind="poison" value={poisonCounters} /> : null}
+          {radCounters > 0 ? <CounterBadge kind="rad" value={radCounters} /> : null}
           {speed > 0 ? <CounterBadge kind="speed" value={speed} /> : null}
           {isOnline && <ConnectionDotInline disconnected={isDisconnected} />}
         </div>

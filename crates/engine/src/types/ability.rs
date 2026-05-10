@@ -4880,6 +4880,9 @@ pub enum Effect {
     /// CR 725.2: Take the initiative. Grants initiative designation and triggers
     /// venture into the Undercity.
     TakeTheInitiative,
+    /// CR 728.1: Process rad counters — mill cards equal to rad counter count,
+    /// lose 1 life and remove one rad counter per nonland card milled.
+    ProcessRadCounters,
     /// Grant a casting permission to the target object (e.g., "cast from exile for {2}").
     /// Building block for Airbending, Foretell, Suspend, Hideaway, and similar mechanics.
     GrantCastingPermission {
@@ -5882,6 +5885,7 @@ impl Effect {
             | Effect::VentureIntoDungeon
             | Effect::VentureInto { .. }
             | Effect::TakeTheInitiative
+            | Effect::ProcessRadCounters
             | Effect::Incubate { .. }
             | Effect::Amass { .. }
             | Effect::Monstrosity { .. }
@@ -6016,6 +6020,7 @@ pub fn effect_variant_name(effect: &Effect) -> &str {
         Effect::VentureIntoDungeon => "VentureIntoDungeon",
         Effect::VentureInto { .. } => "VentureInto",
         Effect::TakeTheInitiative => "TakeTheInitiative",
+        Effect::ProcessRadCounters => "ProcessRadCounters",
         Effect::GrantCastingPermission { .. } => "GrantCastingPermission",
         Effect::ChooseFromZone { .. } => "ChooseFromZone",
         Effect::ChooseAndSacrificeRest { .. } => "ChooseAndSacrificeRest",
@@ -6180,6 +6185,7 @@ pub enum EffectKind {
     VentureIntoDungeon,
     VentureInto,
     TakeTheInitiative,
+    ProcessRadCounters,
     GrantCastingPermission,
     ChooseFromZone,
     ChooseAndSacrificeRest,
@@ -6348,6 +6354,7 @@ impl From<&Effect> for EffectKind {
             Effect::VentureIntoDungeon => EffectKind::VentureIntoDungeon,
             Effect::VentureInto { .. } => EffectKind::VentureInto,
             Effect::TakeTheInitiative => EffectKind::TakeTheInitiative,
+            Effect::ProcessRadCounters => EffectKind::ProcessRadCounters,
             Effect::GrantCastingPermission { .. } => EffectKind::GrantCastingPermission,
             Effect::ChooseFromZone { .. } => EffectKind::ChooseFromZone,
             Effect::ChooseAndSacrificeRest { .. } => EffectKind::ChooseAndSacrificeRest,
