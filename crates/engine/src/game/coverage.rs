@@ -5,6 +5,7 @@ use crate::game::static_abilities::{build_static_registry, StaticAbilityHandler}
 use crate::game::triggers::build_trigger_registry;
 use crate::parser::oracle::is_commander_permission_sentence;
 use crate::parser::oracle_ir::diagnostic::OracleDiagnostic;
+use crate::parser::oracle_util::SELF_REF_TYPE_PHRASES;
 use crate::types::ability::{
     AbilityCondition, AbilityCost, AbilityDefinition, AbilityKind, ActivationRestriction,
     AdditionalCost, AggregateFunction, CardTypeSetSource, ChoiceType, Comparator,
@@ -5646,18 +5647,7 @@ fn normalize_for_matching(lower: &str, card_name_lower: &str) -> String {
         }
     }
     // Normalize common self-reference phrases to ~
-    for phrase in &[
-        "this creature",
-        "this permanent",
-        "this enchantment",
-        "this artifact",
-        "this land",
-        "this spell",
-        "this aura",
-        "this equipment",
-        "this vehicle",
-        "this token",
-    ] {
+    for phrase in SELF_REF_TYPE_PHRASES.iter().chain(["this spell"].iter()) {
         result = result.replace(phrase, "~");
     }
     result
@@ -8395,6 +8385,22 @@ mod tests {
         assert_eq!(extract_pt_modifier("gets -1/-1"), Some((-1, -1)));
         assert_eq!(extract_pt_modifier("gets +0/+3"), Some((0, 3)));
         assert_eq!(extract_pt_modifier("no modifier here"), None);
+    }
+
+    #[test]
+    fn test_normalize_for_matching_uses_parser_self_ref_phrases() {
+        assert_eq!(
+            normalize_for_matching("when this class becomes level 2", ""),
+            "when ~ becomes level 2"
+        );
+        assert_eq!(
+            normalize_for_matching("when you unlock this room", ""),
+            "when you unlock ~"
+        );
+        assert_eq!(
+            normalize_for_matching("when this battle enters", ""),
+            "when ~ enters"
+        );
     }
 
     #[test]
