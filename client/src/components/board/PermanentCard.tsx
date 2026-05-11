@@ -468,7 +468,7 @@ export const PermanentCard = memo(function PermanentCard({ objectId, attachments
 
       {/* Main card — art crop or full card based on preference */}
       {useArtCrop ? (
-        <div className={`relative z-10 rounded-lg overflow-hidden ${glowClass}`}>
+        <div className={`relative z-10 rounded-lg ${glowClass}`}>
           <ArtCropCard objectId={objectId} />
           {/* CR 702.26: phased-out tint overlay — sky-blue mix-blend-screen
               matches the player-area treatment (PlayerArea.tsx 4d6cfb506). */}
