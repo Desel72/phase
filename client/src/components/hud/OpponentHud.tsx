@@ -15,6 +15,7 @@ import { LifeTotal } from "../controls/LifeTotal.tsx";
 import { ManaPoolSummary } from "./ManaPoolSummary.tsx";
 import { ScoreBadge } from "../draft/ScoreBadge.tsx";
 import { CityBlessingBadge, CounterBadge, DungeonBadge, InitiativeBadge, MonarchBadge, StatusBadge } from "./HudBadges.tsx";
+import { AvatarHoverPreview } from "./AvatarHoverPreview.tsx";
 import { HudPlate } from "./HudPlate.tsx";
 import { IncomingAttackersPopover } from "./IncomingAttackersPopover.tsx";
 import { KickConfirmDialog } from "./KickConfirmDialog.tsx";
@@ -561,7 +562,10 @@ function OpponentAvatar({
   seatColor: string;
 }) {
   return (
-    <div
+    <AvatarHoverPreview
+      avatarUrl={avatarUrl}
+      label={label}
+      seatColor={seatColor}
       className="relative h-10 w-9 shrink-0 overflow-hidden rounded-lg border border-white/15 bg-slate-950 shadow-[0_8px_18px_rgba(0,0,0,0.32)]"
       style={{
         borderColor: `${seatColor}cc`,
@@ -570,7 +574,7 @@ function OpponentAvatar({
     >
       <img src={avatarUrl} alt={label} className="h-full w-full object-cover" />
       <div className="absolute inset-0 bg-gradient-to-b from-white/12 via-transparent to-black/35" />
-    </div>
+    </AvatarHoverPreview>
   );
 }
 
