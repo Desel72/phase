@@ -1427,7 +1427,12 @@ pub fn resolve_ability_chain(
     }
 
     // BeginGame abilities are handled by mulligan setup, not normal stack resolution.
+    // CR 103.5b: Mulligan-time abilities (Serum Powder, No-Regrets Egret) likewise never
+    // resolve through the stack — their runtime path lives in `mulligan.rs`.
     if matches!(ability.kind, AbilityKind::BeginGame) && !state.resolving_begin_game_abilities {
+        return Ok(());
+    }
+    if matches!(ability.kind, AbilityKind::Mulligan) {
         return Ok(());
     }
 

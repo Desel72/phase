@@ -182,6 +182,29 @@ pub fn oracle_text_allows_commander(oracle_text: &str, card_name: &str) -> bool 
         || scan_contains(&oracle_text.to_ascii_lowercase(), "can be your commander")
 }
 
+/// CR 103.5b: "Any time you could mulligan and ~ is in your hand, you may ..."
+/// (Serum Powder, No-Regrets Egret). Classified as `AbilityKind::Mulligan` —
+/// the runtime path lives in `mulligan.rs`, never the stack resolver. The
+/// inner effect is parsed via the normal effect-chain path so coverage / debug
+/// tooling can read the shape of the action; the resolution guard in
+/// `effects/mod.rs` skips it during stack resolution regardless of what the
+/// inner effect happens to be.
+fn try_parse_mulligan_time_ability(line: &str, lower: &str) -> Option<AbilityDefinition> {
+    let (_, rest) = nom_on_lower(line, lower, |input| {
+        let (input, _) = tag("any time you could mulligan and ").parse(input)?;
+        let (input, _) = alt((
+            tag("~ is in your hand, you may "),
+            tag("this card is in your hand, you may "),
+        ))
+        .parse(input)?;
+        Ok((input, ()))
+    })?;
+
+    let mut def = parse_effect_chain(rest, AbilityKind::Mulligan).description(line.to_string());
+    def.optional = true;
+    Some(def)
+}
+
 fn try_parse_opening_hand_reveal_delayed_trigger(
     line: &str,
     lower: &str,
@@ -1922,6 +1945,16 @@ pub(crate) fn parse_oracle_ir(
         }
 
         if let Some(def) = try_parse_opening_hand_reveal_delayed_trigger(&line, &lower) {
+            result.abilities.push(def);
+            i += 1;
+            continue;
+        }
+
+        // CR 103.5b: "Any time you could mulligan and ~ is in your hand, you may ..."
+        // (Serum Powder, No-Regrets Egret). Mulligan-time abilities never resolve
+        // through the stack — see `AbilityKind::Mulligan` and the guard in
+        // `effects/mod.rs`. Runtime dispatch lives in `mulligan.rs`.
+        if let Some(def) = try_parse_mulligan_time_ability(&line, &lower) {
             result.abilities.push(def);
             i += 1;
             continue;
@@ -4424,6 +4457,36 @@ mod tests {
         assert!(matches!(filter, TargetFilter::Any));
         assert_eq!(*rest_destination, Some(Zone::Exile));
         assert!(!reveal);
+    }
+
+    /// CR 103.5b: Serum Powder's mulligan-time ability must classify as
+    /// `AbilityKind::Mulligan` with a non-Unimplemented effect. Runtime
+    /// dispatch lives in `mulligan.rs::handle_serum_powder`; the stack guard
+    /// in `effects/mod.rs` ensures this ability never resolves through
+    /// normal stack resolution.
+    #[test]
+    fn serum_powder_mulligan_ability_classifies_as_mulligan_kind() {
+        let r = parse(
+            "{T}: Add {C}.\nAny time you could mulligan and this card is in your hand, you may exile all the cards from your hand, then draw that many cards.",
+            "Serum Powder",
+            &[],
+            &["Artifact"],
+            &[],
+        );
+
+        assert_eq!(r.abilities.len(), 2);
+        // structural: not dispatch — iterator search over parsed ability list in test
+        let mulligan = r
+            .abilities
+            .iter()
+            .find(|a| a.kind == AbilityKind::Mulligan)
+            .expect("mulligan-time ability should be classified as AbilityKind::Mulligan");
+        assert!(mulligan.optional);
+        assert!(
+            !matches!(&*mulligan.effect, Effect::Unimplemented { .. }),
+            "mulligan ability must not be Unimplemented, got {:?}",
+            mulligan.effect
+        );
     }
 
     #[test]

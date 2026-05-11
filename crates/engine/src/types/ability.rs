@@ -6421,6 +6421,12 @@ pub enum AbilityKind {
     /// Pre-game abilities: "If this card is in your opening hand, you may begin the game with..."
     /// Fired during game setup, not during normal stack resolution.
     BeginGame,
+    /// CR 103.5b: Mulligan-time abilities — "Any time you could mulligan and ~ is in your
+    /// hand, you may ..." (Serum Powder, No-Regrets Egret). The player may perform the
+    /// action at any point they would declare whether to take a mulligan. Like `BeginGame`,
+    /// these never resolve through the normal stack; runtime dispatch lives in the mulligan
+    /// flow (e.g. `MulliganChoice::UseSerumPowder` for Serum Powder).
+    Mulligan,
 }
 
 // ---------------------------------------------------------------------------

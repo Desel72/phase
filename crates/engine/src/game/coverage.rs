@@ -1207,6 +1207,7 @@ fn fmt_ability_kind(kind: &AbilityKind) -> &'static str {
         AbilityKind::Activated => "activated",
         AbilityKind::Database => "database",
         AbilityKind::BeginGame => "begin game",
+        AbilityKind::Mulligan => "mulligan",
     }
 }
 
