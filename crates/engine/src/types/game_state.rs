@@ -6,7 +6,7 @@ use rand_chacha::ChaCha20Rng;
 use serde::{Deserialize, Serialize};
 
 use super::ability::{
-    AbilityCost, AbilityDefinition, AdditionalCost, ChoiceType, ChoiceValue,
+    AbilityCost, AbilityDefinition, AdditionalCost, BeholdCostAction, ChoiceType, ChoiceValue,
     ChooseFromZoneConstraint, ContinuousModification, CostPaidObjectSnapshot,
     DelayedTriggerCondition, Duration, EffectKind, GameRestriction, KeywordAction, KickerVariant,
     ModalChoice, ResolvedAbility, SearchSelectionConstraint, StaticCondition, TargetFilter,
@@ -1707,6 +1707,15 @@ pub enum WaitingFor {
         creatures: Vec<ObjectId>,
         pending_cast: Box<PendingCast>,
     },
+    /// Player must choose a matching permanent they control or matching card
+    /// from hand to pay a behold casting cost.
+    BeholdForCost {
+        player: PlayerId,
+        count: usize,
+        choices: Vec<ObjectId>,
+        action: BeholdCostAction,
+        pending_cast: Box<PendingCast>,
+    },
     /// CR 118.3 / CR 605.3b: Player must choose untapped creatures to pay a mana ability cost.
     TapCreaturesForManaAbility {
         player: PlayerId,
@@ -2213,6 +2222,7 @@ impl WaitingFor {
             | WaitingFor::ReturnToHandForCost { player, .. }
             | WaitingFor::BlightChoice { player, .. }
             | WaitingFor::TapCreaturesForSpellCost { player, .. }
+            | WaitingFor::BeholdForCost { player, .. }
             | WaitingFor::TapCreaturesForManaAbility { player, .. }
             | WaitingFor::DiscardForManaAbility { player, .. }
             | WaitingFor::ExileFromBattlefieldForManaAbility { player, .. }
@@ -2307,6 +2317,7 @@ impl WaitingFor {
             | WaitingFor::ReturnToHandForCost { pending_cast, .. }
             | WaitingFor::BlightChoice { pending_cast, .. }
             | WaitingFor::TapCreaturesForSpellCost { pending_cast, .. }
+            | WaitingFor::BeholdForCost { pending_cast, .. }
             | WaitingFor::ExileForCost { pending_cast, .. }
             | WaitingFor::HarmonizeTapChoice { pending_cast, .. } => Some(pending_cast),
             WaitingFor::CollectEvidenceChoice { resume, .. } => match resume.as_ref() {
@@ -4181,6 +4192,13 @@ mod tests {
         variants.push(Box::new(WaitingFor::HarmonizeTapChoice {
             player: PlayerId(0),
             eligible_creatures: vec![ObjectId(1)],
+            pending_cast: dummy_pending(),
+        }));
+        variants.push(Box::new(WaitingFor::BeholdForCost {
+            player: PlayerId(0),
+            count: 1,
+            choices: vec![ObjectId(1)],
+            action: BeholdCostAction::ChooseOrReveal,
             pending_cast: dummy_pending(),
         }));
         variants.push(Box::new(WaitingFor::ConniveDiscard {

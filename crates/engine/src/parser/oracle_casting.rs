@@ -146,6 +146,21 @@ fn parse_self_flash_option(
         }
     }
 
+    if let Ok((after, _)) = tag::<_, _, OracleError<'_>>("if you ").parse(rest) {
+        if let Ok((_, cost_text)) = all_consuming(terminated(
+            take_until::<_, _, OracleError<'_>>(" as an additional cost to cast it"),
+            tag(" as an additional cost to cast it"),
+        ))
+        .parse(after)
+        {
+            let cost = parse_oracle_cost(cost_text);
+            if !matches!(cost, AbilityCost::Unimplemented { .. }) {
+                option = option.cost(cost);
+                return Some(option);
+            }
+        }
+    }
+
     if let Ok((condition_text, _)) = tag::<_, _, OracleError<'_>>("if ").parse(rest) {
         // CR 601.3d: A target-dependent flash permission ("if it targets a commander")
         // must NOT degrade to an unconditional permission when the predicate is not
@@ -506,8 +521,8 @@ fn scan_timing_restrictions(text: &str) -> Vec<CastingRestriction> {
 mod tests {
     use super::*;
     use crate::types::ability::{
-        ControllerRef, FilterProp, ParsedCondition, PlayerFilter, QuantityExpr, TargetFilter,
-        TypeFilter,
+        BeholdCostAction, ControllerRef, FilterProp, ParsedCondition, PlayerFilter, QuantityExpr,
+        TargetFilter, TypeFilter,
     };
     use crate::types::mana::ManaCost;
     use crate::types::zones::Zone;
@@ -727,6 +742,96 @@ mod tests {
             result,
             Some(AdditionalCost::Optional(AbilityCost::Blight { count: 2 }))
         );
+    }
+
+    #[test]
+    fn parse_additional_cost_optional_behold() {
+        let lower =
+            "as an additional cost to cast this spell, you may behold a dragon. (you may choose a dragon you control or reveal a dragon card from your hand.)";
+        let raw =
+            "As an additional cost to cast this spell, you may behold a Dragon. (You may choose a Dragon you control or reveal a Dragon card from your hand.)";
+        let result = parse_additional_cost_line(lower, raw);
+        match result {
+            Some(AdditionalCost::Optional(AbilityCost::Behold {
+                count: 1,
+                filter: TargetFilter::Typed(filter),
+                action: BeholdCostAction::ChooseOrReveal,
+            })) => {
+                assert!(filter
+                    .type_filters
+                    .iter()
+                    .any(|tf| matches!(tf, TypeFilter::Subtype(name) if name == "Dragon")));
+            }
+            other => panic!("Expected Optional(Behold Dragon), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_additional_cost_behold_or_pay() {
+        let lower =
+            "as an additional cost to cast this spell, behold an elf or pay {2}. (to behold an elf, choose an elf you control or reveal an elf card from your hand.)";
+        let raw =
+            "As an additional cost to cast this spell, behold an Elf or pay {2}. (To behold an Elf, choose an Elf you control or reveal an Elf card from your hand.)";
+        let result = parse_additional_cost_line(lower, raw);
+        match result {
+            Some(AdditionalCost::Choice(
+                AbilityCost::Behold {
+                    count: 1,
+                    filter: TargetFilter::Typed(filter),
+                    action: BeholdCostAction::ChooseOrReveal,
+                },
+                AbilityCost::Mana { cost },
+            )) => {
+                assert!(filter
+                    .type_filters
+                    .iter()
+                    .any(|tf| matches!(tf, TypeFilter::Subtype(name) if name == "Elf")));
+                assert_eq!(cost, ManaCost::generic(2));
+            }
+            other => panic!("Expected Choice(Behold Elf, Mana {{2}}), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_additional_cost_mandatory_behold_and_exile() {
+        let lower =
+            "as an additional cost to cast this spell, behold an elemental and exile it. (exile an elemental you control or an elemental card from your hand.)";
+        let raw =
+            "As an additional cost to cast this spell, behold an Elemental and exile it. (Exile an Elemental you control or an Elemental card from your hand.)";
+        let result = parse_additional_cost_line(lower, raw);
+        match result {
+            Some(AdditionalCost::Required(AbilityCost::Behold {
+                count: 1,
+                filter: TargetFilter::Typed(filter),
+                action: BeholdCostAction::ExileChosen,
+            })) => {
+                assert!(filter
+                    .type_filters
+                    .iter()
+                    .any(|tf| matches!(tf, TypeFilter::Subtype(name) if name == "Elemental")));
+            }
+            other => panic!("Expected Required(Behold Elemental exile), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_additional_cost_behold_multiple_objects() {
+        let lower = "as an additional cost to cast this spell, behold three elementals.";
+        let raw = "As an additional cost to cast this spell, behold three Elementals.";
+        let result = parse_additional_cost_line(lower, raw);
+        match result {
+            Some(AdditionalCost::Required(AbilityCost::Behold {
+                count: 3,
+                filter: TargetFilter::Typed(filter),
+                action: BeholdCostAction::ChooseOrReveal,
+            })) => {
+                assert!(filter
+                    .type_filters
+                    .iter()
+                    .any(|tf| matches!(tf, TypeFilter::Subtype(name) if name == "Elemental")));
+            }
+            other => panic!("Expected Required(Behold three Elementals), got {other:?}"),
+        }
     }
 
     #[test]
@@ -1164,6 +1269,32 @@ mod tests {
                 assert!(f.properties.contains(&FilterProp::IsCommander));
             }
             other => panic!("expected SpellTargetsFilter(IsCommander), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn spell_flash_option_behold_additional_cost_attaches() {
+        let option = parse_spell_casting_option_line(
+            "You may cast this spell as though it had flash if you behold a Dragon as an additional cost to cast it.",
+            "Molten Exhale",
+        )
+        .expect("behold flash option should parse");
+        assert!(matches!(
+            option.kind,
+            crate::types::ability::SpellCastingOptionKind::AsThoughHadFlash
+        ));
+        match option.cost {
+            Some(AbilityCost::Behold {
+                count: 1,
+                filter: TargetFilter::Typed(filter),
+                action: BeholdCostAction::ChooseOrReveal,
+            }) => {
+                assert!(filter
+                    .type_filters
+                    .iter()
+                    .any(|tf| matches!(tf, TypeFilter::Subtype(name) if name == "Dragon")));
+            }
+            other => panic!("expected Behold Dragon flash cost, got {other:?}"),
         }
     }
 

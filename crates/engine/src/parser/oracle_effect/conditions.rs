@@ -266,6 +266,7 @@ pub(super) fn strip_additional_cost_conditional(text: &str) -> (Option<AbilityCo
         }
         nom_primitives::split_once_on(lower.as_str(), " was kicked, ")
             .or_else(|_| nom_primitives::split_once_on(lower.as_str(), " was bargained, "))
+            .or_else(|_| nom_primitives::split_once_on(lower.as_str(), " was beheld, "))
             .ok()
             .map(|(_, (_, rest))| {
                 let offset = text.len() - rest.len();
@@ -2994,6 +2995,13 @@ mod tests {
             strip_additional_cost_conditional("If it was kicked, it deals 2 damage to any target.");
         assert_eq!(cond, Some(AbilityCondition::additional_cost_paid_any()));
         assert_eq!(body, "it deals 2 damage to any target.");
+    }
+
+    #[test]
+    fn beheld_emits_default_additional_cost_condition() {
+        let (cond, body) = strip_additional_cost_conditional("If a Dragon was beheld, surveil 2.");
+        assert_eq!(cond, Some(AbilityCondition::additional_cost_paid_any()));
+        assert_eq!(body, "surveil 2.");
     }
 
     /// CR 702.33b + CR 603.4: "if it was kicked twice, …" → min_count = 2.

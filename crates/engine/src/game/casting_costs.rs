@@ -1,8 +1,8 @@
 use std::collections::HashSet;
 
 use crate::types::ability::{
-    AbilityCost, AdditionalCost, CastTimingPermission, CostPaidObjectSnapshot, Effect,
-    KickerVariant, QuantityExpr, ResolvedAbility, SpellCastingOptionKind, TargetFilter,
+    AbilityCost, AdditionalCost, BeholdCostAction, CastTimingPermission, CostPaidObjectSnapshot,
+    Effect, KickerVariant, QuantityExpr, ResolvedAbility, SpellCastingOptionKind, TargetFilter,
     TypedFilter,
 };
 use crate::types::events::GameEvent;
@@ -156,6 +156,34 @@ fn spell_alternative_cost_is_payable(
             .all(|sub_cost| spell_alternative_cost_is_payable(state, player, object_id, sub_cost)),
         other => other.is_payable(state, player, object_id),
     }
+}
+
+pub(crate) fn eligible_behold_choices(
+    state: &GameState,
+    player: PlayerId,
+    source: ObjectId,
+    filter: &TargetFilter,
+) -> Vec<ObjectId> {
+    let ctx = super::filter::FilterContext::from_source(state, source);
+    let mut choices: Vec<ObjectId> = state
+        .battlefield
+        .iter()
+        .copied()
+        .filter(|&id| {
+            state.objects.get(&id).is_some_and(|obj| {
+                obj.controller == player
+                    && super::filter::matches_target_filter(state, id, filter, &ctx)
+            })
+        })
+        .collect();
+
+    if let Some(player_state) = state.players.get(player.0 as usize) {
+        choices.extend(player_state.hand.iter().copied().filter(|&id| {
+            id != source && super::filter::matches_target_filter(state, id, filter, &ctx)
+        }));
+    }
+
+    choices
 }
 
 fn handle_decide_kicker_cost(
@@ -581,6 +609,81 @@ pub(crate) fn handle_tap_creatures_for_spell_cost(
         });
     }
 
+    finish_pending_cost_or_cast(state, player, pending, events)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn handle_behold_for_cost(
+    state: &mut GameState,
+    player: PlayerId,
+    mut pending: PendingCast,
+    count: usize,
+    legal_choices: &[ObjectId],
+    action: BeholdCostAction,
+    chosen: &[ObjectId],
+    events: &mut Vec<GameEvent>,
+) -> Result<WaitingFor, EngineError> {
+    if chosen.len() != count {
+        return Err(EngineError::InvalidAction(format!(
+            "Must behold exactly {} object(s), got {}",
+            count,
+            chosen.len(),
+        )));
+    }
+    for id in chosen {
+        if !legal_choices.contains(id) {
+            return Err(EngineError::InvalidAction(
+                "Selected object not eligible to behold".to_string(),
+            ));
+        }
+    }
+
+    let mut revealed_ids = Vec::new();
+    let mut revealed_names = Vec::new();
+    let mut snapshot = None;
+    for &chosen_id in chosen {
+        let obj = state
+            .objects
+            .get(&chosen_id)
+            .ok_or_else(|| EngineError::InvalidAction("Selected object no longer exists".into()))?;
+        let from_hand = state
+            .players
+            .get(player.0 as usize)
+            .is_some_and(|p| p.hand.contains(&chosen_id));
+        let from_battlefield = obj.zone == Zone::Battlefield && obj.controller == player;
+        if !from_hand && !from_battlefield {
+            return Err(EngineError::InvalidAction(
+                "Selected object is no longer eligible to behold".into(),
+            ));
+        }
+        if snapshot.is_none() {
+            snapshot = Some(CostPaidObjectSnapshot {
+                object_id: chosen_id,
+                lki: obj.snapshot_for_mana_spent(),
+            });
+        }
+        if action == BeholdCostAction::ChooseOrReveal && from_hand {
+            revealed_ids.push(chosen_id);
+            revealed_names.push(obj.name.clone());
+        }
+    }
+
+    if action == BeholdCostAction::ExileChosen {
+        for &chosen_id in chosen {
+            super::zones::move_to_zone(state, chosen_id, Zone::Exile, events);
+        }
+    } else if !revealed_ids.is_empty() {
+        events.push(GameEvent::CardsRevealed {
+            player,
+            card_ids: revealed_ids,
+            card_names: revealed_names,
+        });
+    }
+
+    pending.ability.context.additional_cost_paid = true;
+    if let Some(snapshot) = snapshot {
+        pending.ability.set_cost_paid_object_recursive(snapshot);
+    }
     finish_pending_cost_or_cast(state, player, pending, events)
 }
 
@@ -1024,10 +1127,13 @@ pub(super) fn check_additional_cost_or_pay_with_distribute(
     );
     let cost = &target_adjusted_cost;
 
+    let flash_additional =
+        flash_timing_non_mana_additional_cost(state, player, object_id, cast_timing_permission);
     let additional = state
         .objects
         .get(&object_id)
         .and_then(|obj| obj.additional_cost.clone())
+        .or(flash_additional)
         .or_else(|| effective_casualty_additional_cost(state, player, object_id));
 
     // CR 118.9 + CR 601.2b/f/h: Oracle text alternative costs are announced
@@ -1295,6 +1401,38 @@ pub(super) fn check_additional_cost_or_pay_with_distribute(
     )
 }
 
+fn flash_timing_non_mana_additional_cost(
+    state: &GameState,
+    player: PlayerId,
+    object_id: ObjectId,
+    cast_timing_permission: Option<CastTimingPermission>,
+) -> Option<AdditionalCost> {
+    if cast_timing_permission != Some(CastTimingPermission::AsThoughHadFlash) {
+        return None;
+    }
+    state
+        .objects
+        .get(&object_id)?
+        .casting_options
+        .iter()
+        .find_map(|option| {
+            if option.kind != SpellCastingOptionKind::AsThoughHadFlash {
+                return None;
+            }
+            if option.condition.as_ref().is_some_and(|condition| {
+                !restrictions::evaluate_condition(state, player, object_id, condition)
+            }) {
+                return None;
+            }
+            let cost = option.cost.clone()?;
+            if matches!(cost, AbilityCost::Mana { .. }) {
+                return None;
+            }
+            cost.is_payable(state, player, object_id)
+                .then_some(AdditionalCost::Required(cost))
+        })
+}
+
 /// CR 601.2b: Find the first applicable Defiler cost reduction for a spell being cast.
 /// Returns `Some((life_cost, mana_reduction))` if a controlled Defiler permanent has
 /// `DefilerCostReduction` matching one of the spell's colors and the spell is a permanent spell.
@@ -1503,6 +1641,25 @@ fn pay_additional_cost(
                 player,
                 count: count as usize,
                 creatures,
+                pending_cast: Box::new(pending),
+            });
+        }
+        AbilityCost::Behold {
+            count,
+            ref filter,
+            action,
+        } => {
+            let choices = eligible_behold_choices(state, player, pending.object_id, filter);
+            if choices.len() < count as usize {
+                return Err(EngineError::ActionNotAllowed(
+                    "No eligible object to behold".to_string(),
+                ));
+            }
+            return Ok(WaitingFor::BeholdForCost {
+                player,
+                count: count as usize,
+                choices,
+                action,
                 pending_cast: Box::new(pending),
             });
         }
@@ -5089,6 +5246,148 @@ mod tests {
                 } if *player_id == PlayerId(0)
             )),
             "Should emit LifeChanged event"
+        );
+    }
+
+    fn subtype_filter(subtype: &str) -> TargetFilter {
+        TargetFilter::Typed(TypedFilter::new(TypeFilter::Subtype(subtype.to_string())))
+    }
+
+    fn add_subtype(state: &mut GameState, object_id: ObjectId, subtype: &str) {
+        state
+            .objects
+            .get_mut(&object_id)
+            .unwrap()
+            .card_types
+            .subtypes
+            .push(subtype.to_string());
+    }
+
+    #[test]
+    fn behold_choices_include_controlled_permanents_and_hand_cards() {
+        let mut state = GameState::new_two_player(42);
+        let source = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Piercing Exhale".to_string(),
+            Zone::Hand,
+        );
+        let battlefield_dragon = create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(0),
+            "Dragon Permanent".to_string(),
+            Zone::Battlefield,
+        );
+        add_subtype(&mut state, battlefield_dragon, "Dragon");
+        let hand_dragon = create_object(
+            &mut state,
+            CardId(3),
+            PlayerId(0),
+            "Dragon Card".to_string(),
+            Zone::Hand,
+        );
+        add_subtype(&mut state, hand_dragon, "Dragon");
+        let opposing_dragon = create_object(
+            &mut state,
+            CardId(4),
+            PlayerId(1),
+            "Opposing Dragon".to_string(),
+            Zone::Battlefield,
+        );
+        add_subtype(&mut state, opposing_dragon, "Dragon");
+
+        let choices =
+            eligible_behold_choices(&state, PlayerId(0), source, &subtype_filter("Dragon"));
+
+        assert!(choices.contains(&battlefield_dragon));
+        assert!(choices.contains(&hand_dragon));
+        assert!(!choices.contains(&opposing_dragon));
+        assert!(!choices.contains(&source));
+    }
+
+    #[test]
+    fn handle_behold_for_cost_reveals_hand_card_without_moving_it() {
+        let mut state = GameState::new_two_player(42);
+        let source = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Piercing Exhale".to_string(),
+            Zone::Hand,
+        );
+        let hand_dragon = create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(0),
+            "Dragon Card".to_string(),
+            Zone::Hand,
+        );
+        add_subtype(&mut state, hand_dragon, "Dragon");
+        let pending = make_pending(source);
+        let mut events = Vec::new();
+
+        let result = handle_behold_for_cost(
+            &mut state,
+            PlayerId(0),
+            pending,
+            1,
+            &[hand_dragon],
+            BeholdCostAction::ChooseOrReveal,
+            &[hand_dragon],
+            &mut events,
+        );
+
+        assert!(result.is_ok());
+        assert_eq!(
+            state.objects.get(&hand_dragon).map(|obj| obj.zone),
+            Some(Zone::Hand)
+        );
+        assert!(events.iter().any(|event| {
+            matches!(
+                event,
+                GameEvent::CardsRevealed { card_ids, .. } if card_ids == &vec![hand_dragon]
+            )
+        }));
+    }
+
+    #[test]
+    fn handle_behold_for_cost_exiles_selected_permanent_when_required() {
+        let mut state = GameState::new_two_player(42);
+        let source = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Champion of the Path".to_string(),
+            Zone::Hand,
+        );
+        let elemental = create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(0),
+            "Elemental Permanent".to_string(),
+            Zone::Battlefield,
+        );
+        add_subtype(&mut state, elemental, "Elemental");
+        let pending = make_pending(source);
+        let mut events = Vec::new();
+
+        let result = handle_behold_for_cost(
+            &mut state,
+            PlayerId(0),
+            pending,
+            1,
+            &[elemental],
+            BeholdCostAction::ExileChosen,
+            &[elemental],
+            &mut events,
+        );
+
+        assert!(result.is_ok());
+        assert_eq!(
+            state.objects.get(&elemental).map(|obj| obj.zone),
+            Some(Zone::Exile)
         );
     }
 

@@ -5,7 +5,9 @@ use crate::types::ability::{
 use crate::types::card_type::CoreType;
 use crate::types::counter::CounterType;
 use crate::types::events::GameEvent;
-use crate::types::game_state::{CastingVariant, GameState, StackEntry, StackEntryKind};
+use crate::types::game_state::{
+    CastingVariant, ExileLink, ExileLinkKind, GameState, StackEntry, StackEntryKind,
+};
 use crate::types::identifiers::ObjectId;
 use crate::types::zones::Zone;
 
@@ -476,6 +478,29 @@ pub fn resolve_top(state: &mut GameState, events: &mut Vec<GameEvent>) {
                                 obj.cast_timing_permission = Some((permission, state.turn_number));
                             }
                             obj.convoked_creatures = convoked_creatures;
+                        }
+                        if let Some(exiled_id) = ability
+                            .as_ref()
+                            .and_then(|ability| ability.cost_paid_object.as_ref())
+                            .map(|snapshot| snapshot.object_id)
+                            .filter(|exiled_id| {
+                                state
+                                    .objects
+                                    .get(exiled_id)
+                                    .is_some_and(|obj| obj.zone == Zone::Exile)
+                            })
+                        {
+                            if !state.exile_links.iter().any(|link| {
+                                link.source_id == entry.id && link.exiled_id == exiled_id
+                            }) {
+                                state.exile_links.push(ExileLink {
+                                    exiled_id,
+                                    source_id: entry.id,
+                                    kind: ExileLinkKind::UntilSourceLeaves {
+                                        return_zone: Zone::Hand,
+                                    },
+                                });
+                            }
                         }
                         super::room::unlock_door_designation(
                             state,
@@ -1171,7 +1196,8 @@ mod tests {
     use super::*;
     use crate::game::zones::create_object;
     use crate::types::ability::{
-        Effect, QuantityExpr, ResolvedAbility, TargetFilter, TargetRef, TypedFilter,
+        CostPaidObjectSnapshot, Effect, QuantityExpr, ResolvedAbility, TargetFilter, TargetRef,
+        TypedFilter,
     };
     use crate::types::card_type::CoreType;
     use crate::types::identifiers::CardId;
@@ -1222,6 +1248,77 @@ mod tests {
         });
 
         aura_id
+    }
+
+    #[test]
+    fn permanent_spell_resolution_links_exiled_cost_paid_object() {
+        let mut state = setup();
+        let exiled_id = create_object(
+            &mut state,
+            CardId(101),
+            PlayerId(0),
+            "Exiled Elemental".to_string(),
+            Zone::Exile,
+        );
+        let snapshot = {
+            let exiled = state.objects.get(&exiled_id).unwrap();
+            CostPaidObjectSnapshot {
+                object_id: exiled_id,
+                lki: exiled.snapshot_for_mana_spent(),
+            }
+        };
+        let spell_id = create_object(
+            &mut state,
+            CardId(102),
+            PlayerId(0),
+            "Champion of the Path".to_string(),
+            Zone::Stack,
+        );
+        state
+            .objects
+            .get_mut(&spell_id)
+            .unwrap()
+            .card_types
+            .core_types
+            .push(CoreType::Creature);
+
+        let mut ability = ResolvedAbility::new(
+            Effect::Unimplemented {
+                name: "behold-cost-regression".to_string(),
+                description: None,
+            },
+            vec![],
+            spell_id,
+            PlayerId(0),
+        );
+        ability.set_cost_paid_object_recursive(snapshot);
+
+        state.stack.push_back(StackEntry {
+            id: spell_id,
+            source_id: spell_id,
+            controller: PlayerId(0),
+            kind: StackEntryKind::Spell {
+                card_id: CardId(102),
+                ability: Some(ability),
+                casting_variant: CastingVariant::Normal,
+                actual_mana_spent: 0,
+            },
+        });
+
+        let mut events = Vec::new();
+        resolve_top(&mut state, &mut events);
+
+        assert!(state.battlefield.contains(&spell_id));
+        assert!(state.exile_links.iter().any(|link| {
+            link.exiled_id == exiled_id
+                && link.source_id == spell_id
+                && matches!(
+                    link.kind,
+                    ExileLinkKind::UntilSourceLeaves {
+                        return_zone: Zone::Hand
+                    }
+                )
+        }));
     }
 
     #[test]

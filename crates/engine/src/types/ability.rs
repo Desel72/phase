@@ -3511,6 +3511,12 @@ pub enum RuntimeHandler {
     NinjutsuFamily,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum BeholdCostAction {
+    ChooseOrReveal,
+    ExileChosen,
+}
+
 /// Cost to activate an ability.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -3618,6 +3624,13 @@ pub enum AbilityCost {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         filter: Option<TargetFilter>,
     },
+    /// Behold a matching object as a casting cost.
+    Behold {
+        #[serde(default = "default_one")]
+        count: u32,
+        filter: TargetFilter,
+        action: BeholdCostAction,
+    },
     Composite {
         costs: Vec<AbilityCost>,
     },
@@ -3700,6 +3713,13 @@ impl AbilityCost {
             AbilityCost::Exert => vec![CostCategory::Exerts],
             AbilityCost::Blight { .. } => vec![CostCategory::PutsCounters],
             AbilityCost::Reveal { .. } => vec![CostCategory::Reveals],
+            AbilityCost::Behold { action, .. } => {
+                if *action == BeholdCostAction::ExileChosen {
+                    vec![CostCategory::Reveals, CostCategory::ExilesCards]
+                } else {
+                    vec![CostCategory::Reveals]
+                }
+            }
             AbilityCost::Composite { costs } => {
                 let mut out = Vec::with_capacity(costs.len());
                 for cost in costs {

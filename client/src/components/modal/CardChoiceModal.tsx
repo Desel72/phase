@@ -30,6 +30,7 @@ type DiscardToHandSize = Extract<WaitingFor, { type: "DiscardToHandSize" }>;
 type SacrificeForCost = Extract<WaitingFor, { type: "SacrificeForCost" }>;
 type ReturnToHandForCost = Extract<WaitingFor, { type: "ReturnToHandForCost" }>;
 type BlightChoice = Extract<WaitingFor, { type: "BlightChoice" }>;
+type BeholdForCost = Extract<WaitingFor, { type: "BeholdForCost" }>;
 type ExileForCost = Extract<WaitingFor, { type: "ExileForCost" }>;
 type CollectEvidenceChoice = Extract<WaitingFor, { type: "CollectEvidenceChoice" }>;
 type HarmonizeTapChoice = Extract<WaitingFor, { type: "HarmonizeTapChoice" }>;
@@ -196,6 +197,9 @@ export function CardChoiceModal() {
     case "BlightChoice":
       if (!canActForWaitingState) return null;
       return <BlightModal data={waitingFor.data} />;
+    case "BeholdForCost":
+      if (!canActForWaitingState) return null;
+      return <BeholdModal data={waitingFor.data} />;
     case "CrewVehicle":
       if (!canActForWaitingState) return null;
       return <CrewModal data={waitingFor.data} />;
@@ -1728,11 +1732,13 @@ function ExileForCostModal({
   count,
   title,
   subtitle,
+  confirmLabel = "Exile",
 }: {
   cards: ObjectId[];
   count: number;
   title: string;
   subtitle: string;
+  confirmLabel?: string;
 }) {
   const dispatch = useGameDispatch();
   const objects = useGameStore((s) => s.gameState?.objects);
@@ -1775,7 +1781,7 @@ function ExileForCostModal({
       subtitle={subtitle}
       footer={
         <CostActionFooter onCancel={handleCancel}>
-          <ConfirmButton onClick={handleConfirm} disabled={!isReady} label={`Exile (${selected.size}/${count})`} />
+          <ConfirmButton onClick={handleConfirm} disabled={!isReady} label={`${confirmLabel} (${selected.size}/${count})`} />
         </CostActionFooter>
       }
     >
@@ -1807,7 +1813,7 @@ function ExileForCostModal({
               {isSelected && (
                 <div className="absolute inset-0 flex items-center justify-center rounded-lg bg-purple-500/20">
                   <span className="rounded-full bg-purple-500/90 px-3 py-1 text-xs font-bold text-white">
-                    Exile
+                    {confirmLabel}
                   </span>
                 </div>
               )}
@@ -1838,6 +1844,19 @@ function ExileForCostDispatch({ data }: { data: ExileForCost["data"] }) {
       count={data.count}
       title={title}
       subtitle={`Exile ${data.count} card${data.count > 1 ? "s" : ""} from ${sourceLabel}`}
+    />
+  );
+}
+
+function BeholdModal({ data }: { data: BeholdForCost["data"] }) {
+  const exilesChosen = data.action === "ExileChosen";
+  return (
+    <ExileForCostModal
+      cards={data.choices}
+      count={data.count}
+      title="Behold"
+      subtitle={exilesChosen ? "Exile a matching permanent or card" : "Choose a matching permanent or reveal a matching card"}
+      confirmLabel={exilesChosen ? "Exile" : "Behold"}
     />
   );
 }

@@ -1,4 +1,4 @@
-use crate::types::ability::AdditionalCost;
+use crate::types::ability::{AdditionalCost, BeholdCostAction};
 use crate::types::events::GameEvent;
 use crate::types::game_state::{
     CollectEvidenceResume, GameState, PendingCast, PendingManaAbility, WaitingFor,
@@ -165,6 +165,29 @@ pub(super) fn handle_tap_creatures_for_spell_cost(
         pending_cast,
         count,
         creatures,
+        chosen,
+        events,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn handle_behold_for_cost(
+    state: &mut GameState,
+    player: PlayerId,
+    pending_cast: PendingCast,
+    count: usize,
+    choices: &[ObjectId],
+    action: BeholdCostAction,
+    chosen: &[ObjectId],
+    events: &mut Vec<GameEvent>,
+) -> Result<WaitingFor, EngineError> {
+    casting_costs::handle_behold_for_cost(
+        state,
+        player,
+        pending_cast,
+        count,
+        choices,
+        action,
         chosen,
         events,
     )

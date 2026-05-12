@@ -43,6 +43,7 @@ export const HANDLED_WAITING_FOR_TYPES: ReadonlySet<WaitingFor["type"]> =
     "SacrificeForCost",
     "ReturnToHandForCost",
     "BlightChoice",
+    "BeholdForCost",
     "TapCreaturesForSpellCost",
     "ExileForCost",
     "HarmonizeTapChoice",

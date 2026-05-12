@@ -340,6 +340,15 @@ fn cheap_reject_candidate(state: &GameState, action: &GameAction) -> bool {
             GameAction::SelectCards { cards: chosen },
         ) => selection_mismatch(chosen, cards, Some(*count)),
         (
+            WaitingFor::BeholdForCost {
+                player: _,
+                count,
+                choices,
+                ..
+            },
+            GameAction::SelectCards { cards: chosen },
+        ) => selection_mismatch(chosen, choices, Some(*count)),
+        (
             WaitingFor::EffectZoneChoice {
                 player: _,
                 cards,

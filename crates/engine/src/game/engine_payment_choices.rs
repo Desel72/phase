@@ -431,6 +431,7 @@ pub(super) fn handle_unless_payment(
             | AbilityCost::Exert
             | AbilityCost::Blight { .. }
             | AbilityCost::Reveal { .. }
+            | AbilityCost::Behold { .. }
             | AbilityCost::Composite { .. }
             | AbilityCost::Waterbend { .. }
             | AbilityCost::NinjutsuFamily { .. }

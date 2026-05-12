@@ -246,6 +246,35 @@ pub fn filter_state_for_viewer(state: &GameState, viewer: PlayerId) -> GameState
         }
     }
 
+    if let WaitingFor::BeholdForCost {
+        player,
+        count,
+        ref choices,
+        action,
+        ref pending_cast,
+    } = state.waiting_for
+    {
+        if !can_view_private_for_player(player) {
+            filtered.waiting_for = WaitingFor::BeholdForCost {
+                player,
+                count,
+                choices: choices
+                    .iter()
+                    .filter_map(|id| {
+                        state
+                            .objects
+                            .get(id)
+                            .filter(|obj| obj.zone == Zone::Hand)
+                            .is_none()
+                            .then_some(*id)
+                    })
+                    .collect(),
+                action,
+                pending_cast: pending_cast.clone(),
+            };
+        }
+    }
+
     if let WaitingFor::EffectZoneChoice {
         player,
         ref cards,
@@ -364,7 +393,7 @@ fn hide_card(state: &mut GameState, obj_id: ObjectId) {
 mod tests {
     use super::*;
     use crate::game::zones::create_object;
-    use crate::types::ability::{Effect, ResolvedAbility};
+    use crate::types::ability::{BeholdCostAction, Effect, ResolvedAbility};
     use crate::types::format::FormatConfig;
     use crate::types::game_state::{
         AutoMayChoice, CastingVariant, MayTriggerAutoChoiceKey, MayTriggerOrigin,
@@ -705,6 +734,57 @@ mod tests {
                 assert_eq!(pending_cast.object_id, ObjectId(50));
             }
             other => panic!("expected ExileForCost, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn behold_for_cost_hides_matching_hand_choices_from_non_controller() {
+        let mut state = GameState::new(FormatConfig::standard(), 3, 42);
+        let public_choice = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(1),
+            "Public Dragon".to_string(),
+            Zone::Battlefield,
+        );
+        let private_choice = create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(1),
+            "Hidden Dragon".to_string(),
+            Zone::Hand,
+        );
+        let pending = dummy_pending_cast(ObjectId(51), CardId(99), PlayerId(1));
+        state.waiting_for = WaitingFor::BeholdForCost {
+            player: PlayerId(1),
+            count: 1,
+            choices: vec![public_choice, private_choice],
+            action: BeholdCostAction::ChooseOrReveal,
+            pending_cast: pending,
+        };
+
+        let filtered_self = filter_state_for_viewer(&state, PlayerId(1));
+        match filtered_self.waiting_for {
+            WaitingFor::BeholdForCost { choices, count, .. } => {
+                assert_eq!(choices, vec![public_choice, private_choice]);
+                assert_eq!(count, 1);
+            }
+            other => panic!("expected BeholdForCost, got {other:?}"),
+        }
+
+        let filtered_opp = filter_state_for_viewer(&state, PlayerId(2));
+        match filtered_opp.waiting_for {
+            WaitingFor::BeholdForCost {
+                choices,
+                count,
+                pending_cast,
+                ..
+            } => {
+                assert_eq!(choices, vec![public_choice]);
+                assert_eq!(count, 1);
+                assert_eq!(pending_cast.object_id, ObjectId(51));
+            }
+            other => panic!("expected BeholdForCost, got {other:?}"),
         }
     }
 

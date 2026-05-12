@@ -332,6 +332,7 @@ fn resolve_choice(
         | WaitingFor::ChooseXValue { .. }
         | WaitingFor::ChooseManaColor { .. }
         | WaitingFor::ReturnToHandForCost { .. }
+        | WaitingFor::BeholdForCost { .. }
         | WaitingFor::TapCreaturesForSpellCost { .. }
         | WaitingFor::TapCreaturesForManaAbility { .. }
         | WaitingFor::DefilerPayment { .. }

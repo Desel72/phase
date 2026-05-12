@@ -1,6 +1,7 @@
 use nom::branch::alt;
-use nom::bytes::complete::tag;
-use nom::combinator::value;
+use nom::bytes::complete::{tag, take_till, take_until};
+use nom::combinator::{all_consuming, map, rest, value};
+use nom::sequence::terminated;
 use nom::Parser;
 
 use super::oracle_modal::split_short_label_prefix;
@@ -13,8 +14,8 @@ use super::oracle_util::parse_mana_symbols;
 use super::oracle_util::parse_number;
 use super::oracle_util::TextPair;
 use crate::types::ability::{
-    AbilityCost, CostReduction, FilterProp, PlayerScope, QuantityExpr, QuantityRef, TargetFilter,
-    TypedFilter,
+    AbilityCost, BeholdCostAction, CostReduction, FilterProp, PlayerScope, QuantityExpr,
+    QuantityRef, TargetFilter, TypedFilter,
 };
 use crate::types::counter::parse_counter_type;
 use crate::types::zones::Zone;
@@ -135,9 +136,57 @@ fn fixup_bare_noun_continuations(costs: &mut [AbilityCost]) {
     }
 }
 
+fn parse_behold_cost(lower: &str) -> Option<AbilityCost> {
+    type E<'a> = super::oracle_nom::error::OracleError<'a>;
+    let (input, _) = tag::<_, _, E<'_>>("behold ").parse(lower).ok()?;
+    let (input, count) =
+        if let Ok((rest, _)) = alt((tag::<_, _, E<'_>>("a "), tag("an "))).parse(input) {
+            (rest, 1)
+        } else if let Ok((rest, count)) =
+            terminated(nom_primitives::parse_number, tag::<_, _, E<'_>>(" ")).parse(input)
+        {
+            (rest, count)
+        } else {
+            (input, 1)
+        };
+    let (_, filter_text) = take_till::<_, _, E<'_>>(|c| c == '.' || c == '(')
+        .parse(input)
+        .ok()?;
+    let (_, (filter_text, exile)) = all_consuming(alt((
+        map(
+            terminated(
+                take_until::<_, _, E<'_>>(" and exile it"),
+                tag(" and exile it"),
+            ),
+            |filter_text: &str| (filter_text.trim(), true),
+        ),
+        map(rest, |filter_text: &str| (filter_text.trim(), false)),
+    )))
+    .parse(filter_text.trim())
+    .ok()?;
+    let (filter, remainder) = parse_type_phrase(filter_text);
+    if !remainder.trim().is_empty() || matches!(filter, TargetFilter::Any) {
+        return None;
+    }
+    let action = if exile {
+        BeholdCostAction::ExileChosen
+    } else {
+        BeholdCostAction::ChooseOrReveal
+    };
+    Some(AbilityCost::Behold {
+        count,
+        filter,
+        action,
+    })
+}
+
 pub fn parse_single_cost(text: &str) -> AbilityCost {
     let text = text.trim();
     let lower = text.to_lowercase();
+
+    if let Some(cost) = parse_behold_cost(&lower) {
+        return cost;
+    }
 
     // {T} — tap
     if lower == "{t}" {

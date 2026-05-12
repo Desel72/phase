@@ -1642,6 +1642,33 @@ fn apply_action(
             &mut events,
         )?,
         (
+            WaitingFor::BeholdForCost {
+                player,
+                count,
+                choices,
+                action,
+                pending_cast,
+            },
+            GameAction::SelectCards { cards: chosen },
+        ) => engine_casting::handle_behold_for_cost(
+            state,
+            *player,
+            *pending_cast.clone(),
+            *count,
+            choices,
+            *action,
+            &chosen,
+            &mut events,
+        )?,
+        (
+            WaitingFor::BeholdForCost {
+                player,
+                pending_cast,
+                ..
+            },
+            GameAction::CancelCast,
+        ) => engine_casting::cancel_pending_cast(state, *player, pending_cast, &mut events),
+        (
             WaitingFor::TapCreaturesForSpellCost {
                 player,
                 pending_cast,

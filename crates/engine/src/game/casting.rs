@@ -4806,6 +4806,7 @@ pub fn pay_ability_cost(
         | AbilityCost::Mill { .. }
         | AbilityCost::Blight { .. }
         | AbilityCost::Reveal { .. }
+        | AbilityCost::Behold { .. }
         | AbilityCost::NinjutsuFamily { .. } => {}
     }
     Ok(())

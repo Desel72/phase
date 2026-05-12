@@ -1177,6 +1177,7 @@ impl GameRunner {
             WaitingFor::DiscardForCost { .. } => "DiscardForCost",
             WaitingFor::SacrificeForCost { .. } => "SacrificeForCost",
             WaitingFor::ReturnToHandForCost { .. } => "ReturnToHandForCost",
+            WaitingFor::BeholdForCost { .. } => "BeholdForCost",
             WaitingFor::TapCreaturesForSpellCost { .. } => "TapCreaturesForSpellCost",
             WaitingFor::TapCreaturesForManaAbility { .. } => "TapCreaturesForManaAbility",
             WaitingFor::DiscardForManaAbility { .. } => "DiscardForManaAbility",

@@ -664,6 +664,7 @@ fn fallback_action(state: &GameState) -> Option<GameAction> {
         | WaitingFor::SacrificeForCost { .. }
         | WaitingFor::ReturnToHandForCost { .. }
         | WaitingFor::BlightChoice { .. }
+        | WaitingFor::BeholdForCost { .. }
         | WaitingFor::TapCreaturesForSpellCost { .. }
         | WaitingFor::ExileForCost { .. }
         | WaitingFor::CollectEvidenceChoice { .. }

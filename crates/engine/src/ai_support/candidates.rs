@@ -1157,6 +1157,21 @@ pub fn candidate_actions_broad(state: &GameState) -> Vec<CandidateAction> {
                 )
             })
             .collect(),
+        WaitingFor::BeholdForCost {
+            player,
+            count,
+            choices,
+            ..
+        } => combinations(choices, *count)
+            .into_iter()
+            .map(|combo| {
+                candidate(
+                    GameAction::SelectCards { cards: combo },
+                    TacticalClass::Selection,
+                    Some(*player),
+                )
+            })
+            .collect(),
         // CR 702.34a: AI selects creatures to tap as part of paying flashback tap cost.
         WaitingFor::TapCreaturesForSpellCost {
             player,
