@@ -2176,12 +2176,14 @@ pub(super) fn finalize_cast_with_phyrexian_choices(
                 "Spell mana value does not satisfy the cast permission".to_string(),
             ));
         }
-        if !super::casting::exile_alt_cost_permissions_accept_resulting_mv(
-            state,
-            object_id,
-            player,
-            resulting_mv,
-        ) {
+        if !cascade_accepted
+            && !super::casting::exile_alt_cost_permissions_accept_resulting_mv(
+                state,
+                object_id,
+                player,
+                resulting_mv,
+            )
+        {
             let pending_for_cancel = PendingCast::new(object_id, card_id, ability, cost.clone());
             super::casting::handle_cancel_cast(state, &pending_for_cancel, events);
             return Err(EngineError::ActionNotAllowed(
@@ -5645,18 +5647,17 @@ mod tests {
             create_object(state, card_id, owner, name.to_string(), Zone::Exile)
         }
 
-        fn setup_x_cost_hit(source_mv: u32, chosen_x: u32) -> (GameState, ObjectId, Vec<ObjectId>) {
+        fn setup_fixed_mv_cascade_hit(
+            source_mv: u32,
+            printed_mv: u32,
+        ) -> (GameState, ObjectId, Vec<ObjectId>) {
             let mut state = GameState::new_two_player(42);
             let miss_a = exile_card(&mut state, PlayerId(0), "Miss A");
             let miss_b = exile_card(&mut state, PlayerId(0), "Miss B");
 
-            let hit = exile_card(&mut state, PlayerId(0), "X Spell Hit");
+            let hit = exile_card(&mut state, PlayerId(0), "Fixed MV Hit");
             let hit_obj = state.objects.get_mut(&hit).unwrap();
-            hit_obj.mana_cost = ManaCost::Cost {
-                shards: vec![ManaCostShard::X],
-                generic: 0,
-            };
-            hit_obj.cost_x_paid = Some(chosen_x);
+            hit_obj.mana_cost = ManaCost::generic(printed_mv);
             hit_obj
                 .casting_permissions
                 .push(CastingPermission::ExileWithAltCost {
@@ -5698,12 +5699,12 @@ mod tests {
             });
         }
 
-        /// CR 702.85a + CR 202.3b + CR 107.3b: X=3 with source MV 4 — resulting
-        /// spell MV is 3, which is strictly less than 4, so the cast is
+        /// CR 702.85a: A fixed-MV 3 hit with source MV 4 has resulting spell
+        /// MV 3, which is strictly less than 4, so the cast is
         /// accepted. Misses bottom-shuffle; the cascade permission is consumed.
         #[test]
         fn accepts_when_resulting_mv_below_source() {
-            let (mut state, hit, misses) = setup_x_cost_hit(4, 3);
+            let (mut state, hit, misses) = setup_fixed_mv_cascade_hit(4, 3);
             let mut events = Vec::new();
             let resulting_mv = state.objects.get(&hit).unwrap().mana_cost.mana_value()
                 + state.objects.get(&hit).unwrap().cost_x_paid.unwrap_or(0);
@@ -5738,7 +5739,7 @@ mod tests {
 
         #[test]
         fn accepted_cascade_is_not_vetoed_by_stale_mana_value_permission() {
-            let (mut state, hit, _misses) = setup_x_cost_hit(4, 3);
+            let (mut state, hit, _misses) = setup_fixed_mv_cascade_hit(4, 3);
             state
                 .objects
                 .get_mut(&hit)
@@ -5755,14 +5756,12 @@ mod tests {
                 });
             push_announcement_stack_entry(&mut state, hit);
 
-            let mut ability = placeholder_ability(hit);
-            ability.chosen_x = Some(3);
             let waiting = finalize_cast_with_phyrexian_choices(
                 &mut state,
                 PlayerId(0),
                 hit,
                 CardId(0),
-                ability,
+                placeholder_ability(hit),
                 &ManaCost::zero(),
                 CastingVariant::Normal,
                 None,
@@ -5790,10 +5789,14 @@ mod tests {
                 shards: vec![ManaCostShard::X],
                 generic: 0,
             };
+            let selected_cost = ManaCost::Cost {
+                shards: vec![ManaCostShard::X],
+                generic: 0,
+            };
             hit_obj
                 .casting_permissions
                 .push(CastingPermission::ExileWithAltCost {
-                    cost: ManaCost::zero(),
+                    cost: selected_cost.clone(),
                     cast_transformed: false,
                     constraint: Some(CastPermissionConstraint::ManaValue {
                         comparator: Comparator::LE,
@@ -5819,7 +5822,7 @@ mod tests {
                 hit,
                 CardId(0),
                 ability,
-                &ManaCost::zero(),
+                &selected_cost,
                 CastingVariant::Normal,
                 None,
                 Zone::Exile,
@@ -5829,7 +5832,7 @@ mod tests {
 
             assert!(
                 result.is_err(),
-                "a different permission must not authorize the already-selected zero-cost path"
+                "a different permission must not authorize the already-selected X-cost path"
             );
             assert!(
                 !state.stack.iter().any(|entry| entry.id == hit),
@@ -5897,10 +5900,14 @@ mod tests {
                 shards: vec![ManaCostShard::X],
                 generic: 0,
             };
+            let selected_cost = ManaCost::Cost {
+                shards: vec![ManaCostShard::X],
+                generic: 0,
+            };
             hit_obj
                 .casting_permissions
                 .push(CastingPermission::ExileWithAltCost {
-                    cost: ManaCost::zero(),
+                    cost: selected_cost.clone(),
                     cast_transformed: false,
                     constraint: Some(CastPermissionConstraint::ManaValue {
                         comparator: Comparator::LE,
@@ -5929,7 +5936,7 @@ mod tests {
                 hit,
                 CardId(0),
                 ability,
-                &ManaCost::zero(),
+                &selected_cost,
                 CastingVariant::Normal,
                 None,
                 Zone::Exile,
@@ -5999,13 +6006,13 @@ mod tests {
             assert!(state.stack.iter().any(|entry| entry.id == hit));
         }
 
-        /// CR 702.85a: X=4 with source MV 4 — resulting MV is 4, which is NOT
-        /// strictly less than 4, so the cast is rejected. The permission is
-        /// still consumed, and the returned misses match the original set for
-        /// the caller to bottom-shuffle together with the hit.
+        /// CR 702.85a: A fixed-MV 4 hit with source MV 4 is NOT strictly less
+        /// than 4, so the cast is rejected. The permission is still consumed,
+        /// and the returned misses match the original set for the caller to
+        /// bottom-shuffle together with the hit.
         #[test]
         fn rejects_when_resulting_mv_equals_source() {
-            let (mut state, hit, misses) = setup_x_cost_hit(4, 4);
+            let (mut state, hit, misses) = setup_fixed_mv_cascade_hit(4, 4);
             let mut events = Vec::new();
             let resulting_mv = state.objects.get(&hit).unwrap().mana_cost.mana_value()
                 + state.objects.get(&hit).unwrap().cost_x_paid.unwrap_or(0);
@@ -6038,12 +6045,12 @@ mod tests {
             }
         }
 
-        /// CR 702.85a: X=5 with source MV 4 — resulting MV exceeds source, so
-        /// the cast is rejected. Confirms strict inequality is enforced above
-        /// as well as at the equality boundary.
+        /// CR 702.85a: A fixed-MV 5 hit with source MV 4 exceeds source, so the
+        /// cast is rejected. Confirms strict inequality is enforced above as
+        /// well as at the equality boundary.
         #[test]
         fn rejects_when_resulting_mv_above_source() {
-            let (mut state, hit, _misses) = setup_x_cost_hit(4, 5);
+            let (mut state, hit, _misses) = setup_fixed_mv_cascade_hit(4, 5);
             let mut events = Vec::new();
             let resulting_mv = state.objects.get(&hit).unwrap().mana_cost.mana_value()
                 + state.objects.get(&hit).unwrap().cost_x_paid.unwrap_or(0);
@@ -6062,7 +6069,7 @@ mod tests {
         /// random order, and returns priority to the caster.
         #[test]
         fn rejection_handler_pops_stack_and_bottom_shuffles_all() {
-            let (mut state, hit, misses) = setup_x_cost_hit(4, 4);
+            let (mut state, hit, misses) = setup_fixed_mv_cascade_hit(4, 4);
 
             state.stack.push_back(StackEntry {
                 id: hit,
