@@ -144,15 +144,27 @@ fn betor_end_step_counters_equal_lifelink_gain_no_doubler() {
 }
 
 /// Issue #321 core regression: when BOTH end-step trigger slots are filled,
-/// the `PutCounter` effect must apply ONLY to its own slot-0 target. Before the
-/// fix, the `PutCounter` node greedily consumed the slot-1 target as well, so
-/// the counters were applied to both creatures (and the receiver received
-/// double).
+/// the `PutCounter` effect must apply ONLY to its own slot-0 target.
 ///
-/// Slot 1 (the `ChangeZone` graveyard-return) surfaces battlefield creatures as
-/// legal choices in this harness; that secondary targeting quirk is orthogonal
-/// to this test. The point under test is slot ATTRIBUTION: whatever slot 1
-/// holds, the slot-0 `PutCounter` effect must not touch it.
+/// This is the test that genuinely reproduces #321: the doubling occurs ONLY
+/// when slot 1 (the `ChangeZone` sub-ability target) holds a `Some` target.
+/// With both slots filled, `ability.targets` becomes `[receiver, slot1_pick]`;
+/// the pre-fix allocator set `current_slots = total - sub_chain_minimum`
+/// (`2 - 0 = 2`), so the `PutCounter` node claimed BOTH targets and
+/// `resolve_add` applied the counters once per entry — putting the +1/+1
+/// counters on the slot-1 creature as well as the receiver. (When slot 1 is
+/// *declined*, the `None` is dropped before `ability.targets` is built, so the
+/// over-claim never triggers — which is why a decline-slot-1 test cannot
+/// reproduce the bug.)
+///
+/// On the parsed Betor AST the `ChangeZone` sub-ability's target filter is a
+/// plain `Typed[Creature]` with no zone scoping, so `collect_target_slots`
+/// surfaces battlefield creatures as slot-1 legal targets. The test selects a
+/// distinct battlefield creature for slot 1. `ChangeZone { origin: Graveyard }`
+/// of an object already on the battlefield is a no-op for zone movement; the
+/// load-bearing assertion is the COUNTER attribution — slot 1's creature must
+/// receive zero +1/+1 counters because the slot-0 `PutCounter` effect must not
+/// claim it.
 #[test]
 fn betor_put_counter_does_not_leak_into_second_trigger_slot() {
     let mut scenario = GameScenario::new();
@@ -162,7 +174,7 @@ fn betor_put_counter_does_not_leak_into_second_trigger_slot() {
         .add_creature_from_oracle(P0, "Betor, Ancestor's Voice", 3, 3, BETOR_ORACLE)
         .id();
     let receiver = scenario.add_creature(P0, "Receiver", 1, 1).id();
-    // A second P0 creature that will be selected for slot 1.
+    // A distinct P0 battlefield creature — the slot-1 (`ChangeZone`) target.
     let slot_one_pick = scenario.add_creature(P0, "Slot One Pick", 2, 2).id();
     scenario.add_creature(P1, "Blocker", 3, 3);
 
@@ -172,8 +184,11 @@ fn betor_put_counter_does_not_leak_into_second_trigger_slot() {
 
     advance_to_end_step_trigger(&mut runner);
 
-    // Slot 0 → receiver, slot 1 → a different creature. The fix guarantees the
-    // PutCounter effect consumes only slot 0.
+    // Slot 0 → receiver, slot 1 → a distinct creature. Both choices MUST be
+    // `Some` for this test to exercise the bug; if a slot does not offer the
+    // intended target the test fails loudly rather than silently degrading
+    // into the (non-reproducing) decline path.
+    let mut slot_choices: Vec<(usize, Option<TargetRef>)> = Vec::new();
     let mut guard = 0;
     while matches!(
         runner.state().waiting_for,
@@ -182,7 +197,7 @@ fn betor_put_counter_does_not_leak_into_second_trigger_slot() {
         guard += 1;
         assert!(guard < 10, "target selection did not terminate");
 
-        let target = match &runner.state().waiting_for {
+        let (slot_index, target) = match &runner.state().waiting_for {
             WaitingFor::TriggerTargetSelection {
                 target_slots,
                 selection,
@@ -193,26 +208,55 @@ fn betor_put_counter_does_not_leak_into_second_trigger_slot() {
                 selection,
                 ..
             } => {
-                let want = if selection.current_slot == 0 {
+                let slot_index = selection.current_slot;
+                let want = if slot_index == 0 {
                     receiver
                 } else {
                     slot_one_pick
                 };
-                // Only choose the intended object when it is a legal target
-                // for this slot; otherwise decline so the test stays robust.
-                target_slots.get(selection.current_slot).and_then(|slot| {
-                    slot.legal_targets
-                        .iter()
-                        .find(|t| matches!(t, TargetRef::Object(id) if *id == want))
-                        .cloned()
-                })
+                let legal = &target_slots
+                    .get(slot_index)
+                    .expect("current slot must exist")
+                    .legal_targets;
+                // The intended object MUST be a legal target for this slot —
+                // if it is not, fail rather than silently declining.
+                let target = legal
+                    .iter()
+                    .find(|t| matches!(t, TargetRef::Object(id) if *id == want))
+                    .cloned();
+                assert!(
+                    target.is_some(),
+                    "slot {slot_index} must offer the intended target {want:?}; \
+                     legal targets were {legal:?}"
+                );
+                (slot_index, target)
             }
-            _ => None,
+            _ => unreachable!(),
         };
+        slot_choices.push((slot_index, target.clone()));
         runner
             .act(GameAction::ChooseTarget { target })
             .expect("ChooseTarget should succeed");
     }
+
+    // Both trigger slots must have been offered and filled with a `Some`
+    // target — this is the precondition that makes the test reproduce #321.
+    assert_eq!(
+        slot_choices.len(),
+        2,
+        "the end-step trigger must surface exactly two target slots"
+    );
+    assert_eq!(
+        slot_choices[0],
+        (0, Some(TargetRef::Object(receiver))),
+        "slot 0 must be filled with the receiver"
+    );
+    assert_eq!(
+        slot_choices[1],
+        (1, Some(TargetRef::Object(slot_one_pick))),
+        "slot 1 must be filled with the distinct slot-1 creature — without a \
+         filled slot 1 the bug does not reproduce"
+    );
 
     runner.advance_until_stack_empty();
 
@@ -223,11 +267,13 @@ fn betor_put_counter_does_not_leak_into_second_trigger_slot() {
         "slot-0 PutCounter target must get exactly 3 +1/+1 counters"
     );
     // The slot-1 target must receive ZERO counters — the PutCounter effect
-    // must not leak into the graveyard-return slot.
+    // must not leak into the second trigger slot. This is the assertion that
+    // FAILS on the pre-fix allocator (where the slot-1 creature also received
+    // 3 counters because the PutCounter node over-claimed both slots).
     assert_eq!(
         p1p1_counters(&runner, slot_one_pick),
         0,
         "slot-1 target must NOT receive +1/+1 counters — the PutCounter effect \
-         must resolve against only its own chosen target (CR 601.2c)"
+         must resolve against only its own slot-0 target (CR 601.2c)"
     );
 }
