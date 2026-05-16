@@ -3580,6 +3580,14 @@ pub enum ParsedCondition {
     },
     /// CR 702.131a: True when the activating player has the city's blessing.
     HasCityBlessing,
+    /// CR 102.1: "The active player is the player whose turn it is." True when
+    /// the scoped player is the active player — gates a casting/restriction
+    /// predicate on "if it's your turn". For "if it's not your turn" the parser
+    /// wraps this leaf with `ParsedCondition::Not`. Mirrors
+    /// `AbilityCondition::IsYourTurn` (the structural analogue at the
+    /// ability-resolution layer), the same way `ParsedCondition::And` mirrors
+    /// `AbilityCondition::And`.
+    IsYourTurn,
     /// CR 601.3d + CR 702.8a + CR 608.2c: The in-flight spell being cast targets at
     /// least one object that matches `filter`. Gates a target-dependent casting
     /// permission (Timely Ward — "you may cast this spell as though it had flash if

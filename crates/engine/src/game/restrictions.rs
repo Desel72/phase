@@ -1081,6 +1081,8 @@ pub(crate) fn evaluate_condition(
         // CR 702.131c: The city's blessing is a player designation that effects
         // and restrictions may identify.
         ParsedCondition::HasCityBlessing => state.city_blessing.contains(&player),
+        // CR 102.1: "The active player is the player whose turn it is."
+        ParsedCondition::IsYourTurn => state.active_player == player,
         // CR 601.3d + CR 608.2c: "if it targets a [filter]" — gates a casting
         // permission on the chosen targets of the in-flight spell. Read from
         // `state.pending_cast.ability.targets` when targets have been committed.
@@ -1668,6 +1670,46 @@ mod tests {
             PlayerId(0),
             ObjectId(1),
             "you attacked this turn"
+        ));
+    }
+
+    #[test]
+    fn is_your_turn_condition_tracks_active_player() {
+        // CR 102.1: the active player is the player whose turn it is.
+        // Drives the real `evaluate_condition` over `IsYourTurn` and its
+        // `Not` wrapper (the form produced for "if it's not your turn").
+        let mut state = crate::types::game_state::GameState::new_two_player(42);
+        let is_your_turn = ParsedCondition::IsYourTurn;
+        let not_your_turn = ParsedCondition::Not {
+            condition: Box::new(ParsedCondition::IsYourTurn),
+        };
+
+        state.active_player = PlayerId(0);
+        assert!(evaluate_condition(
+            &state,
+            PlayerId(0),
+            ObjectId(1),
+            &is_your_turn
+        ));
+        assert!(!evaluate_condition(
+            &state,
+            PlayerId(0),
+            ObjectId(1),
+            &not_your_turn
+        ));
+
+        state.active_player = PlayerId(1);
+        assert!(!evaluate_condition(
+            &state,
+            PlayerId(0),
+            ObjectId(1),
+            &is_your_turn
+        ));
+        assert!(evaluate_condition(
+            &state,
+            PlayerId(0),
+            ObjectId(1),
+            &not_your_turn
         ));
     }
 

@@ -203,6 +203,10 @@ fn static_condition_to_restriction_condition(
             .map(|condition| ParsedCondition::Not {
                 condition: Box::new(condition),
             }),
+        // CR 102.1: "it's your turn" — the active player is the scoped player.
+        // The `Not` recursion arm above yields `Not(IsYourTurn)` for
+        // "it's not your turn".
+        StaticCondition::DuringYourTurn => Some(ParsedCondition::IsYourTurn),
         _ => None,
     }
 }
