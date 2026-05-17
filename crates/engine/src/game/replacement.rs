@@ -3224,6 +3224,161 @@ fn apply_single_replacement(
     Ok(proposed)
 }
 
+/// CR 616.1f: When two or more replacement effects apply to the same event, the
+/// affected object's controller normally chooses an ordering. That ordering is
+/// only *material* when applying one replacement could change whether another is
+/// still applicable; otherwise the prompt is degenerate (every order yields the
+/// same result, and all candidates always apply).
+///
+/// This predicate classifies a candidate set as material iff *either*:
+/// - *any* candidate's `execute` ability is an unconditionally order-sensitive
+///   shape — a destination-redirecting `Effect::ChangeZone` (CR 614.6 — Rest in
+///   Peace class; inspected via its own `destination`, not
+///   `is_event_modifier_effect`, which classifies *all* `ChangeZone` as a pure
+///   modifier and would miss exactly the material case), a controller override
+///   (CR 616.1b — "enters under your control"), or `Effect::BecomeCopy` /
+///   copy-as-it-enters (CR 616.1c — Essence of the Wild); *or*
+/// - two or more candidates *overwrite the same* `ProposedEvent` field — e.g. a
+///   tapland's `Effect::Tap` and Spelunking's `Effect::Untap` both write
+///   `enter_tapped`, so the last-applied wins and the order changes the result.
+///
+/// A single field-writer with no peer is immaterial. Unrecognized effect shapes
+/// default to MATERIAL — never auto-resolve a possibly order-sensitive set; this
+/// conservative default also covers self-replacement effects (CR 616.1a /
+/// CR 614.15).
+fn replacement_ordering_is_material(
+    state: &GameState,
+    candidates: &[ReplacementId],
+    proposed: &ProposedEvent,
+) -> bool {
+    let proposed_to = match proposed {
+        ProposedEvent::ZoneChange { to, .. } => Some(*to),
+        _ => None,
+    };
+    // CR 616.1f: classify each candidate. A set is material if either:
+    //  - any candidate is *unconditionally* material (zone redirect, controller
+    //    override, copy-as-it-enters — shapes that retroactively change another
+    //    candidate's applicability regardless of the other candidates), or
+    //  - two or more candidates write the *same* `ProposedEvent` field, so the
+    //    last-applied wins and the order changes the outcome (tapland + Spelunking
+    //    both write `enter_tapped`). A single writer of a field has no conflict.
+    let mut seen_fields: Vec<EventField> = Vec::new();
+    for rid in candidates {
+        match candidate_materiality(state, *rid, proposed_to) {
+            CandidateMateriality::Unconditional => return true,
+            CandidateMateriality::Writes(field) => {
+                if seen_fields.contains(&field) {
+                    return true;
+                }
+                seen_fields.push(field);
+            }
+            CandidateMateriality::Disjoint => {}
+        }
+    }
+    false
+}
+
+/// A `ProposedEvent` field a non-redirecting replacement *overwrites*. Two
+/// candidates overwriting the same field conflict (order-material, CR 616.1f) —
+/// last-applied wins. Append-style fields (`enter_with_counters` accumulates)
+/// are not overwrite collisions and are intentionally not modeled here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EventField {
+    /// `ZoneChange::enter_tapped` — overwritten by `Effect::Tap` / `Effect::Untap`.
+    EnterTapped,
+}
+
+/// CR 616.1f classification of a single replacement candidate.
+enum CandidateMateriality {
+    /// An order-sensitive shape regardless of the other candidates (zone
+    /// redirect, controller override, copy-as-it-enters).
+    Unconditional,
+    /// A pure `ProposedEvent`-field modifier. Immaterial alone; material iff
+    /// another candidate writes the same field.
+    Writes(EventField),
+    /// Touches no event field that another candidate could also touch
+    /// (`Effect::Choose` post-effect, null/no-op pass-through).
+    Disjoint,
+}
+
+/// CR 616.1f: classify a candidate's `execute` ability. Inspects the root
+/// `Effect` and walks `sub_ability` directly — `first_non_modifier_ability`
+/// skips over `ChangeZone` links, so it cannot surface the material redirect
+/// case. Unrecognized effect shapes default to `Unconditional` (conservative —
+/// never auto-resolve a possibly order-sensitive set).
+fn candidate_materiality(
+    state: &GameState,
+    rid: ReplacementId,
+    proposed_to: Option<Zone>,
+) -> CandidateMateriality {
+    let repl_def = state
+        .objects
+        .get(&rid.source)
+        .and_then(|obj| obj.replacement_definitions.get(rid.index));
+    let Some(repl_def) = repl_def else {
+        // Unknown definition — be conservative.
+        return CandidateMateriality::Unconditional;
+    };
+    let Some(execute) = repl_def.execute.as_deref() else {
+        // Null/no-op replacement (test-fixture / pure pass-through shape) — it
+        // cannot affect any other candidate's applicability.
+        return CandidateMateriality::Disjoint;
+    };
+    let mut field: Option<EventField> = None;
+    let mut current = Some(execute);
+    while let Some(def) = current {
+        match &*def.effect {
+            // CR 614.6: a destination-redirecting ChangeZone (graveyard→exile,
+            // etc.) is the material case. A ChangeZone whose destination equals
+            // the proposed `to` zone is not a redirect.
+            Effect::ChangeZone { destination, .. } if proposed_to != Some(*destination) => {
+                return CandidateMateriality::Unconditional;
+            }
+            // CR 616.1b: a non-redirecting ChangeZone (destination matches the
+            // proposed `to` zone) is not ordering-material on its own.
+            Effect::ChangeZone { .. } => {}
+            _ if effect_overrides_controller(&def.effect) => {
+                return CandidateMateriality::Unconditional;
+            }
+            // CR 616.1c: copy-as-it-enters strips another replacement's source.
+            Effect::BecomeCopy { .. } => return CandidateMateriality::Unconditional,
+            // CR 614.1c: `Tap`/`Untap` both overwrite the `enter_tapped` field —
+            // two such candidates conflict (tapland + Spelunking / Archelos),
+            // last-applied wins.
+            Effect::Tap { .. } | Effect::Untap { .. } => {
+                field = Some(EventField::EnterTapped);
+            }
+            // ETB-counter replacements (`PutCounter`) only *append* to
+            // `enter_with_counters`, so they never conflict. `Effect::Choose`
+            // (the as-enters color choice) runs after the ZoneChange and
+            // touches no shared event field. Both are explicitly recognized as
+            // order-independent so they do NOT fall through to the conservative
+            // material default below.
+            Effect::PutCounter { .. } | Effect::Choose { .. } => {}
+            // CR 616.1f: any unrecognized effect shape defaults to MATERIAL —
+            // never auto-resolve a set whose order-sensitivity is unproven.
+            _ => return CandidateMateriality::Unconditional,
+        }
+        current = def.sub_ability.as_deref();
+    }
+    match field {
+        Some(field) => CandidateMateriality::Writes(field),
+        None => CandidateMateriality::Disjoint,
+    }
+}
+
+/// CR 616.1b: True if an effect moves an object onto the battlefield under a
+/// controller other than its owner ("enters under your control" class).
+fn effect_overrides_controller(effect: &Effect) -> bool {
+    matches!(
+        effect,
+        Effect::ChangeZone {
+            under_your_control: true,
+            ..
+        }
+    )
+}
+
 fn pipeline_loop(
     state: &mut GameState,
     mut proposed: ProposedEvent,
@@ -3277,7 +3432,7 @@ fn pipeline_loop(
                 Err(ApplyResult::Prevented) => return ReplacementResult::Prevented,
                 Err(ApplyResult::Modified(_)) => unreachable!(),
             }
-        } else {
+        } else if replacement_ordering_is_material(state, &candidates, &proposed) {
             // CR 616.1: If multiple replacement effects apply, the affected player
             // or controller of the affected object chooses which one to apply first,
             // even when every candidate is mandatory.
@@ -3289,6 +3444,26 @@ fn pipeline_loop(
                 is_optional: false,
             });
             return ReplacementResult::NeedsChoice(affected);
+        } else {
+            // CR 616.1f: ordering is material only when applying one replacement
+            // can change another's applicability; otherwise the prompt is
+            // degenerate. Auto-resolve: apply candidates[0] and re-loop — the
+            // single-candidate mandatory path, iterated. All candidates still
+            // apply exactly once.
+            let rid = candidates[0];
+            proposed.mark_applied(rid);
+            match apply_single_replacement(
+                state,
+                proposed,
+                rid,
+                ReplacementBranch::Execute,
+                registry,
+                events,
+            ) {
+                Ok(new_event) => proposed = new_event,
+                Err(ApplyResult::Prevented) => return ReplacementResult::Prevented,
+                Err(ApplyResult::Modified(_)) => unreachable!(),
+            }
         }
 
         depth += 1;
@@ -3680,8 +3855,10 @@ mod tests {
 
     #[test]
     fn test_once_per_event_enforcement() {
-        // Two mandatory Moved replacements on the same object — the affected player
-        // chooses the first, then the remaining one still applies exactly once.
+        // CR 616.1f: two bare (null/no-op) mandatory Moved replacements on the
+        // same object are immaterial — neither can change the other's
+        // applicability — so the pipeline auto-resolves without a prompt. The
+        // once-per-event invariant (each applies exactly once) is unchanged.
         let repl1 = make_repl(ReplacementEvent::Moved);
         let repl2 = make_repl(ReplacementEvent::Moved);
         let mut state = test_state_with_object(ObjectId(10), Zone::Battlefield, vec![repl1, repl2]);
@@ -3691,14 +3868,8 @@ mod tests {
             ProposedEvent::zone_change(ObjectId(10), Zone::Battlefield, Zone::Graveyard, None);
 
         let result = replace_event(&mut state, proposed, &mut events);
-        let ReplacementResult::NeedsChoice(player) = result else {
-            panic!("expected NeedsChoice, got {:?}", result);
-        };
-        assert_eq!(player, PlayerId(0));
-
-        let final_result = continue_replacement(&mut state, 0, &mut events);
-        let ReplacementResult::Execute(event) = final_result else {
-            panic!("expected Execute after choosing replacement order, got {final_result:?}");
+        let ReplacementResult::Execute(event) = result else {
+            panic!("expected Execute (immaterial auto-resolve), got {result:?}");
         };
         assert_eq!(
             event.applied_set().len(),
@@ -3708,9 +3879,9 @@ mod tests {
     }
 
     #[test]
-    fn test_multiple_mandatory_replacements_need_choice() {
-        // Two different objects each with a mandatory Moved replacement — the affected
-        // player must choose the order instead of the pipeline auto-applying one.
+    fn test_multiple_immaterial_replacements_auto_resolve() {
+        // CR 616.1f: two bare Moved replacements on *different* objects are also
+        // immaterial — the pipeline auto-resolves both without a prompt.
         let repl = make_repl(ReplacementEvent::Moved);
 
         let mut state = GameState::new_two_player(42);
@@ -3760,19 +3931,134 @@ mod tests {
             applied: HashSet::new(),
         };
         let result = replace_event(&mut state, proposed, &mut events);
-        let ReplacementResult::NeedsChoice(player) = result else {
-            panic!("expected NeedsChoice, got {:?}", result);
-        };
-        assert_eq!(player, PlayerId(0));
-
-        let final_result = continue_replacement(&mut state, 0, &mut events);
-        let ReplacementResult::Execute(event) = final_result else {
-            panic!("expected Execute after choosing replacement order, got {final_result:?}");
+        let ReplacementResult::Execute(event) = result else {
+            panic!("expected Execute (immaterial auto-resolve), got {result:?}");
         };
         assert_eq!(
             event.applied_set().len(),
             2,
             "both replacements should have applied"
+        );
+    }
+
+    /// Build a Moved replacement whose `execute` redirects a zone change to a
+    /// specific destination — a genuine destination-redirecting `ChangeZone`
+    /// (Rest in Peace class). Such replacements are ordering-material (CR 614.6).
+    fn redirect_repl(destination: Zone) -> ReplacementDefinition {
+        ReplacementDefinition::new(ReplacementEvent::Moved).execute(AbilityDefinition::new(
+            AbilityKind::Spell,
+            Effect::ChangeZone {
+                origin: None,
+                destination,
+                target: TargetFilter::SelfRef,
+                owner_library: false,
+                enter_transformed: false,
+                under_your_control: false,
+                enter_tapped: false,
+                enters_attacking: false,
+                up_to: false,
+                enter_with_counters: Vec::new(),
+            },
+        ))
+    }
+
+    #[test]
+    fn test_material_replacement_ordering_still_prompts() {
+        // CR 616.1f: two genuine zone-redirect replacements on different sources,
+        // each sending the object to a *different* destination zone. Applying one
+        // changes whether the other still applies, so the ordering is material —
+        // the CR 616.1 prompt must still be surfaced.
+        let mut state = GameState::new_two_player(42);
+
+        let mut obj1 = GameObject::new(
+            ObjectId(10),
+            CardId(1),
+            PlayerId(0),
+            "RedirectToExile".to_string(),
+            Zone::Battlefield,
+        );
+        obj1.replacement_definitions = vec![redirect_repl(Zone::Exile)].into();
+
+        let mut obj2 = GameObject::new(
+            ObjectId(20),
+            CardId(2),
+            PlayerId(0),
+            "RedirectToLibrary".to_string(),
+            Zone::Battlefield,
+        );
+        obj2.replacement_definitions = vec![redirect_repl(Zone::Library)].into();
+
+        state.objects.insert(ObjectId(10), obj1);
+        state.objects.insert(ObjectId(20), obj2);
+        state.battlefield.push_back(ObjectId(10));
+        state.battlefield.push_back(ObjectId(20));
+
+        let target = GameObject::new(
+            ObjectId(30),
+            CardId(3),
+            PlayerId(0),
+            "Target".to_string(),
+            Zone::Battlefield,
+        );
+        state.objects.insert(ObjectId(30), target);
+
+        let mut events = Vec::new();
+        let proposed =
+            ProposedEvent::zone_change(ObjectId(30), Zone::Battlefield, Zone::Graveyard, None);
+        let result = replace_event(&mut state, proposed, &mut events);
+        let ReplacementResult::NeedsChoice(player) = result else {
+            panic!("expected NeedsChoice for material ordering, got {result:?}");
+        };
+        assert_eq!(player, PlayerId(0));
+    }
+
+    #[test]
+    fn gate_land_enters_tapped_and_prompts_color_without_modal() {
+        // Issue #482 Defect A: a Gate land has two mandatory `Moved` ETB
+        // replacements — `Tap SelfRef` (enters tapped) and a `Choose` (as it
+        // enters, choose a color). Their application order is immaterial, so the
+        // pipeline must auto-resolve without a spurious CR 616.1 modal. Both
+        // replacements still apply: the land enters tapped, and the color
+        // `Choose` is stashed as a post-replacement continuation.
+        let tap_repl = ReplacementDefinition::new(ReplacementEvent::Moved)
+            .execute(AbilityDefinition::new(
+                AbilityKind::Spell,
+                Effect::Tap {
+                    target: TargetFilter::SelfRef,
+                },
+            ))
+            .valid_card(TargetFilter::SelfRef)
+            .destination_zone(Zone::Battlefield);
+        let choose_repl = ReplacementDefinition::new(ReplacementEvent::Moved)
+            .execute(AbilityDefinition::new(
+                AbilityKind::Spell,
+                Effect::Choose {
+                    choice_type: crate::types::ability::ChoiceType::color_excluding(vec![
+                        crate::types::mana::ManaColor::Green,
+                    ]),
+                    persist: true,
+                },
+            ))
+            .valid_card(TargetFilter::SelfRef)
+            .destination_zone(Zone::Battlefield);
+        let mut state =
+            test_state_with_object(ObjectId(10), Zone::Hand, vec![tap_repl, choose_repl]);
+        let mut events = Vec::new();
+        let proposed =
+            ProposedEvent::zone_change(ObjectId(10), Zone::Hand, Zone::Battlefield, None);
+
+        let result = replace_event(&mut state, proposed, &mut events);
+        let ReplacementResult::Execute(ProposedEvent::ZoneChange { enter_tapped, .. }) = result
+        else {
+            panic!("expected Execute with ZoneChange (no modal), got {result:?}");
+        };
+        assert!(
+            enter_tapped.resolve(false),
+            "Gate land should enter the battlefield tapped"
+        );
+        assert!(
+            state.post_replacement_continuation.is_some(),
+            "the as-enters color Choose should be stashed as a post-replacement continuation"
         );
     }
 
@@ -4168,10 +4454,12 @@ mod tests {
 
     #[test]
     fn test_continue_replacement_after_choice() {
-        // Two mandatory replacements should now surface a choice, and resolving one
-        // choice should let the pipeline finish the remaining replacement.
-        let repl1 = make_repl(ReplacementEvent::Moved);
-        let repl2 = make_repl(ReplacementEvent::Moved);
+        // CR 616.1f: two *material* (zone-redirecting) replacements surface an
+        // ordering choice, and resolving one choice lets the pipeline finish the
+        // remaining replacement. Bare/no-op replacements would auto-resolve, so
+        // genuine destination-redirecting `ChangeZone` replacements are used.
+        let repl1 = redirect_repl(Zone::Exile);
+        let repl2 = redirect_repl(Zone::Library);
 
         let mut state = test_state_with_object(ObjectId(10), Zone::Battlefield, vec![repl1, repl2]);
         let mut events = Vec::new();

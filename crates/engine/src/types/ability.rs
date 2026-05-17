@@ -844,6 +844,11 @@ pub enum ManaProduction {
             skip_serializing_if = "is_default_mana_contribution"
         )]
         contribution: ManaContribution,
+        /// CR 106.1: Optional fixed color the player may produce *instead of* the
+        /// chosen color (Cycle of Gates: "Add {G} or one mana of the chosen
+        /// color"). `None` = pure chosen-color production (Utopia Sprawl class).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        fixed_alternative: Option<ManaColor>,
     },
     /// CR 106.7: Produce mana of any color that a land an opponent controls could produce.
     /// Colors are computed dynamically at resolution time by inspecting opponent lands.
@@ -979,6 +984,8 @@ impl<'de> serde::Deserialize<'de> for ManaProduction {
                         count: QuantityExpr,
                         #[serde(default = "default_mana_contribution")]
                         contribution: ManaContribution,
+                        #[serde(default)]
+                        fixed_alternative: Option<ManaColor>,
                     },
                     OpponentLandColors {
                         #[serde(default = "default_quantity_one")]
@@ -1044,9 +1051,11 @@ impl<'de> serde::Deserialize<'de> for ManaProduction {
                     ManaProductionHelper::ChosenColor {
                         count,
                         contribution,
+                        fixed_alternative,
                     } => ManaProduction::ChosenColor {
                         count,
                         contribution,
+                        fixed_alternative,
                     },
                     ManaProductionHelper::OpponentLandColors { count } => {
                         ManaProduction::OpponentLandColors { count }

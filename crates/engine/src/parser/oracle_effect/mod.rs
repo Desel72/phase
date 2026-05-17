@@ -20808,6 +20808,7 @@ mod tests {
                 produced: ManaProduction::ChosenColor {
                     count: QuantityExpr::Fixed { value: 1 },
                     contribution: ManaContribution::Additional,
+                    ..
                 },
                 ..
             }
@@ -20824,10 +20825,32 @@ mod tests {
                 produced: ManaProduction::ChosenColor {
                     count: QuantityExpr::Fixed { value: 1 },
                     contribution: ManaContribution::Base,
+                    ..
                 },
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn effect_add_fixed_or_chosen_color_gate_land() {
+        // Issue #482 Defect B: Cycle of Gates' "Add {G} or one mana of the
+        // chosen color" must carry the fixed `{G}` alternative — it must not be
+        // dropped into a bare `ChosenColor`.
+        let e = parse_effect("add {g} or one mana of the chosen color");
+        assert!(
+            matches!(
+                &e,
+                Effect::Mana {
+                    produced: ManaProduction::ChosenColor {
+                        fixed_alternative: Some(crate::types::mana::ManaColor::Green),
+                        ..
+                    },
+                    ..
+                }
+            ),
+            "expected ChosenColor with fixed_alternative Some(Green), got {e:?}"
+        );
     }
 
     #[test]
