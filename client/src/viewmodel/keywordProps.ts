@@ -121,8 +121,18 @@ const U32_KEYWORDS = new Set([
   "Dredge", "Modular", "Renown", "Fabricate", "Annihilator", "Bushido",
   "Tribute", "Afterlife", "Fading", "Vanishing", "Rampage", "Absorb",
   "Crew", "Hideaway", "Poisonous", "Bloodthirst", "Amplify", "Graft",
-  "Devour", "Toxic", "Saddle", "Soulshift", "Backup", "Firebending",
+  "Devour", "Toxic", "Saddle", "Soulshift", "Backup",
 ]);
+
+function formatQuantityKeywordDetail(val: unknown): string | null {
+  if (typeof val === "number") return String(val);
+  if (val && typeof val === "object" && "type" in val && val.type === "Fixed") {
+    const value = (val as { value?: unknown }).value;
+    return typeof value === "number" ? String(value) : null;
+  }
+  if (val && typeof val === "object" && "type" in val) return "X";
+  return null;
+}
 
 /** Extract human-readable detail for parameterized keywords, or null. */
 export function getKeywordDetail(kw: Keyword): string | null {
@@ -142,11 +152,10 @@ export function getKeywordDetail(kw: Keyword): string | null {
     return `enters with ${count} ${formatCounterName(ct)} counter${count !== 1 ? "s" : ""}`;
   }
   if (key === "Mobilize") {
-    // QuantityExpr uses #[serde(tag = "type")]: { type: "Fixed", value: N }
-    if (val && typeof val === "object" && val.type === "Fixed") {
-      return String(val.value);
-    }
-    return null;
+    return formatQuantityKeywordDetail(val);
+  }
+  if (key === "Firebending") {
+    return formatQuantityKeywordDetail(val);
   }
   if (key === "Partner") {
     if (!val) return null;

@@ -65,6 +65,15 @@ describe("getKeywordDetail", () => {
     expect(getKeywordDetail({ Annihilator: 2 })).toBe("2");
   });
 
+  it("formats quantity keyword params", () => {
+    expect(getKeywordDetail({ Firebending: 2 })).toBe("2");
+    expect(getKeywordDetail({ Firebending: { type: "Fixed", value: 3 } })).toBe("3");
+    expect(getKeywordDetail({ Firebending: { type: "Ref", qty: "SelfPower" } })).toBe("X");
+    expect(getKeywordDetail({ Mobilize: 2 })).toBe("2");
+    expect(getKeywordDetail({ Mobilize: { type: "Fixed", value: 4 } })).toBe("4");
+    expect(getKeywordDetail({ Mobilize: { type: "Ref", qty: "SelfPower" } })).toBe("X");
+  });
+
   it("formats Protection variants", () => {
     expect(getKeywordDetail({ Protection: { Color: "Black" } })).toBe("from black");
     expect(getKeywordDetail({ Protection: "Multicolored" })).toBe("from multicolored");
@@ -107,6 +116,7 @@ describe("getKeywordDisplayText", () => {
     expect(getKeywordDisplayText({ Equip: { Cost: { shards: [], generic: 3 } } })).toBe("Equip {3}");
     expect(getKeywordDisplayText({ Protection: { Color: "Red" } })).toBe("Protection from red");
     expect(getKeywordDisplayText({ Crew: 3 })).toBe("Crew 3");
+    expect(getKeywordDisplayText({ Firebending: { type: "Fixed", value: 2 } })).toBe("Firebending 2");
   });
 
   it("returns just name for simple keywords", () => {

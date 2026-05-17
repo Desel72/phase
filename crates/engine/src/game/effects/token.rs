@@ -255,7 +255,9 @@ fn extract_keywords(segments: &[&str]) -> Vec<Keyword> {
                 .get(i + 1)
                 .and_then(|v| v.parse::<u32>().ok())
                 .unwrap_or(1);
-            keywords.push(Keyword::Firebending(n));
+            keywords.push(Keyword::Firebending(QuantityExpr::Fixed {
+                value: n as i32,
+            }));
             skip_next = segments
                 .get(i + 1)
                 .is_some_and(|v| v.parse::<u32>().is_ok());

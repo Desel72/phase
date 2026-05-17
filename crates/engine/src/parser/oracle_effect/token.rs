@@ -944,9 +944,11 @@ pub(super) fn map_token_keyword(text: &str) -> Option<Keyword> {
         return Some(Keyword::Changeling);
     }
     match Keyword::from_str(trimmed) {
-        Ok(Keyword::Unknown(_)) => None,
+        Ok(Keyword::Unknown(_)) => {
+            super::super::oracle_keyword::parse_keyword_from_oracle(&trimmed.to_lowercase())
+        }
         Ok(keyword) => Some(keyword),
-        Err(_) => None,
+        Err(_) => super::super::oracle_keyword::parse_keyword_from_oracle(&trimmed.to_lowercase()),
     }
 }
 
@@ -967,6 +969,7 @@ pub(super) fn push_unique_string(values: &mut Vec<String>, value: impl Into<Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::ability::QuantityExpr;
 
     #[test]
     fn copy_tokens_of_exiled_cost_card_use_cost_paid_object_source() {
@@ -981,6 +984,14 @@ mod tests {
         };
         assert_eq!(target, TargetFilter::CostPaidObject);
         assert_eq!(count, QuantityExpr::Fixed { value: 2 });
+    }
+
+    #[test]
+    fn token_keyword_clause_parses_firebending_amount() {
+        assert_eq!(
+            parse_token_keyword_clause("with firebending 1"),
+            vec![Keyword::Firebending(QuantityExpr::Fixed { value: 1 })]
+        );
     }
 
     #[test]

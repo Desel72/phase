@@ -11300,6 +11300,10 @@ mod tests {
         assert_eq!(map_keyword("intimidate"), Some(Keyword::Intimidate));
         assert_eq!(map_keyword("wither"), Some(Keyword::Wither));
         assert_eq!(map_keyword("infect"), Some(Keyword::Infect));
+        assert_eq!(
+            map_keyword("firebending 5"),
+            Some(Keyword::Firebending(QuantityExpr::Fixed { value: 5 }))
+        );
         // Unknown returns None
         assert_eq!(map_keyword("notakeyword"), None);
     }

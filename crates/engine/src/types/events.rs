@@ -465,7 +465,7 @@ pub enum GameEvent {
     InitiativeTaken {
         player_id: PlayerId,
     },
-    /// Avatar crossover: A creature with firebending attacked, producing mana.
+    /// Avatar crossover: A firebending ability resolved and produced mana.
     Firebend {
         source_id: ObjectId,
         controller: PlayerId,

@@ -181,6 +181,8 @@ pub enum KeywordKind {
     Freerunning,
     /// CR 702.191: Increment — see `Keyword::Increment`.
     Increment,
+    /// CR 702.189: Firebending — see `Keyword::Firebending`.
+    Firebending,
     /// CR ???: Specialize — not in CR text (needs manual verification).
     /// See `Keyword::Specialize`.
     Specialize,
@@ -635,7 +637,7 @@ pub enum Keyword {
     },
 
     /// Firebending N — produces N {R} when this creature attacks (Avatar crossover).
-    Firebending(u32),
+    Firebending(QuantityExpr),
 
     /// CR 702.46a: Splice onto [type] — reveal from hand and pay splice cost while casting
     /// a spell of the specified type to add this card's effects to that spell.
@@ -938,6 +940,7 @@ impl Keyword {
             Keyword::MoreThanMeetsTheEye(_) => KeywordKind::MoreThanMeetsTheEye,
             Keyword::Freerunning(_) => KeywordKind::Freerunning,
             Keyword::Increment => KeywordKind::Increment,
+            Keyword::Firebending(_) => KeywordKind::Firebending,
             Keyword::Specialize(_) => KeywordKind::Specialize,
             Keyword::Offering(_) => KeywordKind::Offering,
             Keyword::Escalate(_) => KeywordKind::Escalate,
@@ -973,7 +976,6 @@ impl Keyword {
             | Keyword::Entwine(_)
             | Keyword::Epic
             | Keyword::Evoke(_)
-            | Keyword::Firebending(_)
             | Keyword::Fortify(_)
             | Keyword::Fuse
             | Keyword::Graft(_)
@@ -1401,7 +1403,10 @@ impl FromStr for Keyword {
                     }
                     return Ok(Keyword::Unknown(s.to_string()));
                 }
-                "firebending" => return Ok(Keyword::Firebending(p.parse().unwrap_or(1))),
+                "firebending" => {
+                    let n: i32 = p.parse().unwrap_or(1);
+                    return Ok(Keyword::Firebending(QuantityExpr::Fixed { value: n }));
+                }
                 // CR 702.47a: Splice onto [type] [cost]
                 "splice" => {
                     // Strip "onto " prefix if present (e.g., "onto arcane {w}" → "arcane {w}")
@@ -1563,7 +1568,7 @@ impl FromStr for Keyword {
             "dethrone" => Ok(Keyword::Dethrone),
             "doubleteam" => Ok(Keyword::DoubleTeam),
             "livingmetal" => Ok(Keyword::LivingMetal),
-            "firebending" => Ok(Keyword::Firebending(1)),
+            "firebending" => Ok(Keyword::Firebending(QuantityExpr::Fixed { value: 1 })),
             "bloodthirst" => Ok(Keyword::Bloodthirst(BloodthirstValue::Fixed(1))),
             "hideaway" => Ok(Keyword::Hideaway(4)),
             "cumulative" => Ok(Keyword::CumulativeUpkeep(String::new())),
@@ -1919,7 +1924,17 @@ fn keyword_from_tagged(variant: &str, data: &serde_json::Value) -> Result<Keywor
         "Soulshift" => Ok(Keyword::Soulshift(uint(data))),
         "Backup" => Ok(Keyword::Backup(uint(data))),
         // Avatar crossover: Firebending
-        "Firebending" => Ok(Keyword::Firebending(uint(data))),
+        "Firebending" => {
+            if let Some(n) = data.as_u64() {
+                Ok(Keyword::Firebending(QuantityExpr::Fixed {
+                    value: n as i32,
+                }))
+            } else {
+                let expr: QuantityExpr = serde_json::from_value(data.clone())
+                    .map_err(|e| format!("Firebending: {e}"))?;
+                Ok(Keyword::Firebending(expr))
+            }
+        }
         // CR 702.157
         "Squad" => Ok(Keyword::Squad(mana(data)?)),
         // CR 702.29
@@ -2566,5 +2581,50 @@ mod tests {
         let json = serde_json::to_value(&kw).unwrap();
         let deserialized: Keyword = serde_json::from_value(json.clone()).unwrap();
         assert_eq!(kw, deserialized, "round-trip failed for {json}");
+    }
+
+    #[test]
+    fn firebending_from_str_parses_fixed_amount() {
+        assert_eq!(
+            Keyword::from_str("Firebending:2").unwrap(),
+            Keyword::Firebending(QuantityExpr::Fixed { value: 2 })
+        );
+        assert_eq!(
+            Keyword::from_str("Firebending").unwrap(),
+            Keyword::Firebending(QuantityExpr::Fixed { value: 1 })
+        );
+    }
+
+    #[test]
+    fn firebending_deserializes_legacy_number_and_quantity_expr() {
+        let legacy: Keyword = serde_json::from_value(serde_json::json!({
+            "Firebending": 3
+        }))
+        .unwrap();
+        assert_eq!(
+            legacy,
+            Keyword::Firebending(QuantityExpr::Fixed { value: 3 })
+        );
+
+        let quantity: Keyword = serde_json::from_value(serde_json::json!({
+            "Firebending": {
+                "type": "Ref",
+                "qty": {
+                    "type": "Power",
+                    "scope": {
+                        "type": "Source"
+                    }
+                }
+            }
+        }))
+        .unwrap();
+        assert_eq!(
+            quantity,
+            Keyword::Firebending(QuantityExpr::Ref {
+                qty: crate::types::ability::QuantityRef::Power {
+                    scope: crate::types::ability::ObjectScope::Source
+                }
+            })
+        );
     }
 }

@@ -1420,27 +1420,6 @@ pub fn declare_attackers(
         attacks: attacks.to_vec(),
     });
 
-    // Emit Firebend events for each attacking creature with firebending.
-    // These go into the same events batch so process_triggers catches both
-    // AttackersDeclared (for the mana trigger) and Firebend (for Avatar Aang).
-    for &obj_id in &attacker_ids {
-        if let Some(obj) = state.objects.get(&obj_id) {
-            if obj
-                .keywords
-                .iter()
-                .any(|k| matches!(k, Keyword::Firebending(_)))
-            {
-                super::bending::record_bending(
-                    state,
-                    events,
-                    crate::types::events::BendingType::Fire,
-                    obj_id,
-                    obj.controller,
-                );
-            }
-        }
-    }
-
     // CR 508.1a: Record attacker object IDs for per-turn tracking.
     state
         .creatures_attacked_this_turn

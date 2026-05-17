@@ -10,6 +10,7 @@
 //! type-system lookup; there is no semantic translation. Cost/filter
 //! keywords need real conversion logic, so they land with their phase.
 
+use engine::types::ability::QuantityExpr;
 use engine::types::keywords::{
     BloodthirstValue, BuybackCost, CyclingCost, FlashbackCost, HexproofFilter, ProtectionTarget,
     WardCost,
@@ -313,7 +314,9 @@ pub fn try_convert(rule: &Rule, path: &str) -> ConvResult<Option<Keyword>> {
             }
         }
         // Firebending N — Avatar crossover. mtgish stores N as a GameNumber.
-        Rule::Firebending(g) => Keyword::Firebending(int_or_gap(g, "Rule::Firebending", path)?),
+        Rule::Firebending(g) => Keyword::Firebending(QuantityExpr::Fixed {
+            value: int_or_gap(g, "Rule::Firebending", path)? as i32,
+        }),
         // CR 702.81: Devour N — engine encodes only N (the "creatures you
         // sacrifice" filter is implicit).
         Rule::Devour(_perm, g) => Keyword::Devour(int_or_gap(g, "Rule::Devour", path)?),

@@ -8,7 +8,7 @@ use crate::types::ability::{
 };
 use crate::types::events::GameEvent;
 use crate::types::game_state::{
-    GameState, ManaChoice, ManaChoiceContext, ManaChoicePrompt, WaitingFor,
+    GameState, ManaChoice, ManaChoiceContext, ManaChoicePrompt, MayTriggerOrigin, WaitingFor,
 };
 use crate::types::mana::{ManaColor, ManaRestriction, ManaType};
 
@@ -90,6 +90,7 @@ pub fn resolve(
 
     // CR 106.4: When an effect instructs a player to add mana, that mana goes
     // into that player's mana pool.
+    let produced_mana = !mana_types.is_empty();
     for mana_type in mana_types {
         mana_payment::produce_mana_with_attributes_from_source_quality(
             state,
@@ -104,6 +105,7 @@ pub fn resolve(
             events,
         );
     }
+    record_firebending_if_marked(state, ability, produced_mana, events);
 
     events.push(GameEvent::EffectResolved {
         kind: EffectKind::from(&ability.effect),
@@ -145,6 +147,7 @@ pub fn handle_choose_mana_effect(
         );
     let concrete_restrictions = resolve_restrictions(restrictions, state, ability.source_id);
     let recipient = ability.controller;
+    let produced_mana = !mana_types.is_empty();
     for mana_type in mana_types {
         mana_payment::produce_mana_with_attributes_from_source_quality(
             state,
@@ -159,6 +162,7 @@ pub fn handle_choose_mana_effect(
             events,
         );
     }
+    record_firebending_if_marked(state, ability, produced_mana, events);
 
     events.push(GameEvent::EffectResolved {
         kind: EffectKind::from(&ability.effect),
@@ -169,6 +173,30 @@ pub fn handle_choose_mana_effect(
     state.priority_player = recipient;
     super::drain_pending_continuation(state, events);
     Ok(state.waiting_for.clone())
+}
+
+fn record_firebending_if_marked(
+    state: &mut GameState,
+    ability: &ResolvedAbility,
+    produced_mana: bool,
+    events: &mut Vec<GameEvent>,
+) {
+    if !produced_mana {
+        return;
+    }
+    let Some(MayTriggerOrigin::Keyword {
+        keyword: crate::types::keywords::KeywordKind::Firebending,
+    }) = ability.may_trigger_origin
+    else {
+        return;
+    };
+    crate::game::bending::record_bending(
+        state,
+        events,
+        crate::types::events::BendingType::Fire,
+        ability.source_id,
+        ability.controller,
+    );
 }
 
 fn chosen_mana_types_for_prompt(
@@ -631,6 +659,96 @@ mod tests {
 
         assert_eq!(state.players[0].mana_pool.count_color(ManaType::Red), 1);
         assert_eq!(state.players[0].mana_pool.total(), 1);
+    }
+
+    #[test]
+    fn firebending_marker_records_firebend_when_mana_is_produced() {
+        let mut state = GameState::new_two_player(42);
+        let source = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Firebender".to_string(),
+            Zone::Battlefield,
+        );
+        state.objects.get_mut(&source).unwrap().power = Some(4);
+        let mut ability = ResolvedAbility::new(
+            Effect::Mana {
+                produced: ManaProduction::AnyOneColor {
+                    count: QuantityExpr::Ref {
+                        qty: QuantityRef::Power {
+                            scope: crate::types::ability::ObjectScope::Source,
+                        },
+                    },
+                    color_options: vec![ManaColor::Red],
+                    contribution: ManaContribution::Base,
+                },
+                restrictions: vec![],
+                grants: vec![],
+                expiry: Some(crate::types::mana::ManaExpiry::EndOfCombat),
+                target: None,
+            },
+            vec![],
+            source,
+            PlayerId(0),
+        );
+        ability.may_trigger_origin = Some(MayTriggerOrigin::Keyword {
+            keyword: crate::types::keywords::KeywordKind::Firebending,
+        });
+        let mut events = Vec::new();
+
+        resolve(&mut state, &ability, &mut events).unwrap();
+
+        assert_eq!(state.players[0].mana_pool.count_color(ManaType::Red), 4);
+        assert!(events.iter().any(|event| matches!(
+            event,
+            GameEvent::Firebend {
+                source_id,
+                controller: PlayerId(0)
+            } if *source_id == source
+        )));
+        assert!(state.players[0]
+            .bending_types_this_turn
+            .contains(&crate::types::events::BendingType::Fire));
+    }
+
+    #[test]
+    fn firebending_marker_does_not_record_firebend_for_zero_mana() {
+        let mut state = GameState::new_two_player(42);
+        let source = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Firebender".to_string(),
+            Zone::Battlefield,
+        );
+        let mut ability = ResolvedAbility::new(
+            Effect::Mana {
+                produced: ManaProduction::AnyOneColor {
+                    count: QuantityExpr::Fixed { value: 0 },
+                    color_options: vec![ManaColor::Red],
+                    contribution: ManaContribution::Base,
+                },
+                restrictions: vec![],
+                grants: vec![],
+                expiry: Some(crate::types::mana::ManaExpiry::EndOfCombat),
+                target: None,
+            },
+            vec![],
+            source,
+            PlayerId(0),
+        );
+        ability.may_trigger_origin = Some(MayTriggerOrigin::Keyword {
+            keyword: crate::types::keywords::KeywordKind::Firebending,
+        });
+        let mut events = Vec::new();
+
+        resolve(&mut state, &ability, &mut events).unwrap();
+
+        assert_eq!(state.players[0].mana_pool.total(), 0);
+        assert!(!events
+            .iter()
+            .any(|event| matches!(event, GameEvent::Firebend { .. })));
     }
 
     #[test]
