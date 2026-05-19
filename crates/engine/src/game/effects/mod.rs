@@ -464,13 +464,17 @@ pub(crate) fn parent_referent_context_from_events(
     events: &[GameEvent],
 ) -> Option<CostPaidObjectSnapshot> {
     // CR 608.2c + CR 400.7j: Later instructions in one resolving effect may
-    // refer to a single object the earlier instruction sacrificed or moved to a
-    // public zone, even after that object changed zones.
+    // refer to a single object the earlier instruction sacrificed, moved to a
+    // public zone, or revealed, even after that object changed zones.
     if let Some(snapshot) = sacrificed_object_context_from_events(state, events) {
         return Some(snapshot);
     }
 
-    moved_object_context_from_events(events)
+    if let Some(snapshot) = moved_object_context_from_events(events) {
+        return Some(snapshot);
+    }
+
+    revealed_object_context_from_events(state, events)
 }
 
 fn sacrificed_object_context_from_events(
@@ -505,6 +509,35 @@ fn moved_object_context_from_events(events: &[GameEvent]) -> Option<CostPaidObje
     });
     let first = moved.next()?;
     moved.next().is_none().then_some(first)
+}
+
+/// CR 608.2c + CR 608.2h + CR 701.20b: A `reveal` instruction introduces an
+/// object that a later anaphoric pronoun ("its mana value") in the same
+/// ability binds to. Revealing does not move the card (CR 701.20b), so it
+/// emits `CardsRevealed`, not `ZoneChanged` — capture the referent here.
+/// The snapshot is taken now because a chained `ChangeZone` may move the
+/// card to a hidden zone (Hand); CR 608.2h mandates last-known-information
+/// once that happens. Single-card guard: a multi-card reveal has no
+/// singular "it".
+fn revealed_object_context_from_events(
+    state: &GameState,
+    events: &[GameEvent],
+) -> Option<CostPaidObjectSnapshot> {
+    let mut revealed = events.iter().filter_map(|event| match event {
+        GameEvent::CardsRevealed { card_ids, .. } => Some(card_ids),
+        _ => None,
+    });
+    let card_ids = revealed.next()?;
+    let [card_id] = card_ids.as_slice() else {
+        return None;
+    };
+    let obj = state.objects.get(card_id)?;
+    let snapshot = CostPaidObjectSnapshot {
+        object_id: *card_id,
+        lki: obj.snapshot_for_mana_spent(),
+    };
+    // Second `CardsRevealed` event → ambiguous "it" → no referent.
+    revealed.next().is_none().then_some(snapshot)
 }
 
 fn lki_snapshot_from_zone_change_record(record: &ZoneChangeRecord) -> LKISnapshot {
@@ -4528,6 +4561,120 @@ mod tests {
         ];
 
         assert!(parent_referent_context_from_events(&state, &events).is_none());
+    }
+
+    /// CR 608.2c + CR 701.20b: a single-card `CardsRevealed` event introduces
+    /// an anaphoric referent (the revealed card).
+    #[test]
+    fn revealed_object_context_reads_single_revealed_card() {
+        let mut state = GameState::new_two_player(42);
+        let card = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Three Mana Spell".to_string(),
+            Zone::Hand,
+        );
+        {
+            let obj = state.objects.get_mut(&card).unwrap();
+            obj.mana_cost = ManaCost::generic(3);
+            obj.base_mana_cost = obj.mana_cost.clone();
+        }
+        let events = vec![GameEvent::CardsRevealed {
+            player: PlayerId(0),
+            card_ids: vec![card],
+            card_names: vec!["Three Mana Spell".to_string()],
+        }];
+
+        let snapshot = revealed_object_context_from_events(&state, &events)
+            .expect("a single-card reveal should provide a referent");
+        assert_eq!(snapshot.object_id, card);
+        assert_eq!(snapshot.lki.mana_value, 3);
+        assert_eq!(snapshot.lki.name, "Three Mana Spell");
+    }
+
+    /// A multi-card reveal has no singular "it" → no referent.
+    #[test]
+    fn revealed_object_context_ignores_multi_card_reveal() {
+        let mut state = GameState::new_two_player(42);
+        let a = create_object(&mut state, CardId(1), PlayerId(0), "A".into(), Zone::Hand);
+        let b = create_object(&mut state, CardId(2), PlayerId(0), "B".into(), Zone::Hand);
+        let events = vec![GameEvent::CardsRevealed {
+            player: PlayerId(0),
+            card_ids: vec![a, b],
+            card_names: vec!["A".into(), "B".into()],
+        }];
+        assert!(revealed_object_context_from_events(&state, &events).is_none());
+    }
+
+    /// Two separate `CardsRevealed` events → ambiguous "it" → no referent.
+    #[test]
+    fn revealed_object_context_ignores_two_reveal_events() {
+        let mut state = GameState::new_two_player(42);
+        let a = create_object(&mut state, CardId(1), PlayerId(0), "A".into(), Zone::Hand);
+        let b = create_object(&mut state, CardId(2), PlayerId(0), "B".into(), Zone::Hand);
+        let events = vec![
+            GameEvent::CardsRevealed {
+                player: PlayerId(0),
+                card_ids: vec![a],
+                card_names: vec!["A".into()],
+            },
+            GameEvent::CardsRevealed {
+                player: PlayerId(0),
+                card_ids: vec![b],
+                card_names: vec!["B".into()],
+            },
+        ];
+        assert!(revealed_object_context_from_events(&state, &events).is_none());
+    }
+
+    /// `parent_referent_context_from_events` prefers a sacrifice over a reveal
+    /// when both event kinds are present (most-specific-first ordering).
+    #[test]
+    fn parent_referent_prefers_sacrifice_over_reveal() {
+        let mut state = GameState::new_two_player(42);
+        let revealed = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Revealed".into(),
+            Zone::Hand,
+        );
+        let sacrificed = ObjectId(99);
+        state.lki_cache.insert(
+            sacrificed,
+            crate::types::game_state::LKISnapshot {
+                name: "Sacrificed".to_string(),
+                power: Some(1),
+                toughness: Some(1),
+                mana_value: 5,
+                controller: PlayerId(0),
+                owner: PlayerId(0),
+                card_types: vec![CoreType::Creature],
+                subtypes: vec![],
+                supertypes: vec![],
+                keywords: vec![],
+                colors: vec![],
+                counters: Default::default(),
+            },
+        );
+        let events = vec![
+            GameEvent::CardsRevealed {
+                player: PlayerId(0),
+                card_ids: vec![revealed],
+                card_names: vec!["Revealed".into()],
+            },
+            GameEvent::PermanentSacrificed {
+                object_id: sacrificed,
+                player_id: PlayerId(0),
+            },
+        ];
+        let snapshot = parent_referent_context_from_events(&state, &events)
+            .expect("sacrifice should provide a referent");
+        assert_eq!(
+            snapshot.object_id, sacrificed,
+            "sacrifice must take priority over reveal"
+        );
     }
 
     #[test]

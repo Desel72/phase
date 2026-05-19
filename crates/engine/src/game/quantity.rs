@@ -1941,9 +1941,10 @@ fn object_for_scope<'a>(
             .as_ref()
             .and_then(crate::game::targeting::extract_source_from_event)
             .and_then(|id| state.objects.get(&id)),
-        // CR 608.2k: a triggered-ability anaphoric pronoun that escaped parse-time
-        // remapping resolves identically to CostPaidObject — behavior-preserving
-        // (these cards parsed as CostPaidObject before ObjectScope::Anaphoric existed).
+        // CR 608.2k / CR 608.2c: object-*identity* lookup. Neither
+        // `CostPaidObject` (cost referent) nor `Anaphoric` (instruction-order
+        // referent) resolves to a live `GameObject` here — both are snapshot
+        // referents read through `ability` slots, not `state.objects`.
         ObjectScope::CostPaidObject | ObjectScope::Anaphoric => None,
     }
 }
@@ -1973,9 +1974,10 @@ fn object_id_for_scope(
             .current_trigger_event
             .as_ref()
             .and_then(crate::game::targeting::extract_source_from_event),
-        // CR 608.2k: a triggered-ability anaphoric pronoun that escaped parse-time
-        // remapping resolves identically to CostPaidObject — behavior-preserving
-        // (these cards parsed as CostPaidObject before ObjectScope::Anaphoric existed).
+        // CR 608.2k / CR 608.2c: object-*identity* lookup. Neither
+        // `CostPaidObject` (cost referent) nor `Anaphoric` (instruction-order
+        // referent) resolves to an `ObjectId` here — both are snapshot
+        // referents read through `ability` slots, not `state.objects`.
         ObjectScope::CostPaidObject | ObjectScope::Anaphoric => None,
     }
 }
@@ -2174,11 +2176,7 @@ where
         // priority between them; the engine's pinned `cost_paid_object`-first
         // choice stands. Exact parity with the `resolve_object_mana_value`
         // `CostPaidObject` arm.
-        //
-        // CR 608.2k: a triggered-ability anaphoric pronoun that escaped parse-time
-        // remapping resolves identically to CostPaidObject — behavior-preserving
-        // (these cards parsed as CostPaidObject before ObjectScope::Anaphoric existed).
-        ObjectScope::CostPaidObject | ObjectScope::Anaphoric => ability
+        ObjectScope::CostPaidObject => ability
             .and_then(|a| a.cost_paid_object.as_ref())
             .and_then(|snapshot| lki_extract(&snapshot.lki))
             .or_else(|| {
@@ -2193,6 +2191,32 @@ where
             .or_else(|| {
                 ability
                     .and_then(|a| a.effect_context_object.as_ref())
+                    .and_then(|snapshot| lki_extract(&snapshot.lki))
+            })
+            .unwrap_or(0),
+        // CR 608.2c: An anaphoric pronoun ("its power") in a triggered ability
+        // binds to the object introduced by the most recent earlier *effect
+        // instruction* in the same ability (slot 1: `effect_context_object`).
+        // CR 608.2k: if no such instruction exists, fall back to the
+        // trigger-condition referent (slot 2: trigger-event source) then the
+        // cost referent (slot 3: `cost_paid_object`). The arm differs from
+        // `CostPaidObject` only in slot priority — instruction-order (608.2c)
+        // first, vs. cost referent (608.2k) first.
+        ObjectScope::Anaphoric => ability
+            .and_then(|a| a.effect_context_object.as_ref())
+            .and_then(|snapshot| lki_extract(&snapshot.lki))
+            .or_else(|| {
+                object_id_for_scope(state, ObjectScope::EventSource, ctx, targets).and_then(|id| {
+                    state
+                        .objects
+                        .get(&id)
+                        .and_then(&obj_extract)
+                        .or_else(|| state.lki_cache.get(&id).and_then(&lki_extract))
+                })
+            })
+            .or_else(|| {
+                ability
+                    .and_then(|a| a.cost_paid_object.as_ref())
                     .and_then(|snapshot| lki_extract(&snapshot.lki))
             })
             .unwrap_or(0),
@@ -2267,11 +2291,7 @@ fn resolve_object_mana_value(
         // regression guard; slot 2 is inserted strictly between them
         // (insert-only). Exact parity with the `resolve_object_pt`
         // `CostPaidObject` arm.
-        //
-        // CR 608.2k: a triggered-ability anaphoric pronoun that escaped parse-time
-        // remapping resolves identically to CostPaidObject — behavior-preserving
-        // (these cards parsed as CostPaidObject before ObjectScope::Anaphoric existed).
-        ObjectScope::CostPaidObject | ObjectScope::Anaphoric => ability
+        ObjectScope::CostPaidObject => ability
             .and_then(|a| a.cost_paid_object.as_ref())
             .map(|snapshot| u32_to_i32_saturating(snapshot.lki.mana_value))
             .or_else(|| {
@@ -2292,6 +2312,44 @@ fn resolve_object_mana_value(
                 ability
                     .and_then(|a| a.effect_context_object.as_ref())
                     .map(|snapshot| u32_to_i32_saturating(snapshot.lki.mana_value))
+            })
+            .unwrap_or(0),
+        // CR 608.2c: An anaphoric pronoun ("its mana value") in a triggered
+        // ability binds to the object introduced by the most recent earlier
+        // *effect instruction* in the same ability (slot 1). CR 608.2k: if no
+        // such instruction exists, fall back to the trigger-condition referent
+        // (slot 2) then the cost referent (slot 3). Resolution order:
+        //   1. `effect_context_object` — the earlier-instruction referent
+        //      (revealed card / moved card / effect-sacrificed creature). This
+        //      is the CR 608.2c anaphoric binding for the reveal class (Dark
+        //      Confidant, #511).
+        //   2. trigger-event source — the CR 608.2k trigger-condition referent
+        //      (#512: "When this creature dies, ... its mana value"), live
+        //      object then LKI.
+        //   3. `cost_paid_object` — the CR 608.2k cost referent, last resort.
+        // The arm differs from `CostPaidObject` only in slot priority:
+        // instruction-order (608.2c) first, vs. cost referent (608.2k) first.
+        ObjectScope::Anaphoric => ability
+            .and_then(|a| a.effect_context_object.as_ref())
+            .map(|s| u32_to_i32_saturating(s.lki.mana_value))
+            .or_else(|| {
+                object_id_for_scope(state, ObjectScope::EventSource, ctx, targets).and_then(|id| {
+                    state
+                        .objects
+                        .get(&id)
+                        .map(|obj| u32_to_i32_saturating(obj.mana_cost.mana_value()))
+                        .or_else(|| {
+                            state
+                                .lki_cache
+                                .get(&id)
+                                .map(|lki| u32_to_i32_saturating(lki.mana_value))
+                        })
+                })
+            })
+            .or_else(|| {
+                ability
+                    .and_then(|a| a.cost_paid_object.as_ref())
+                    .map(|s| u32_to_i32_saturating(s.lki.mana_value))
             })
             .unwrap_or(0),
     }
@@ -6313,6 +6371,162 @@ mod tests {
             4,
             "cost_paid_object (MV 3) must win over effect_context_object (MV 9): \
              1 + 3 = 4"
+        );
+    }
+
+    /// CR 608.2c — `ObjectScope::Anaphoric` mana value reads
+    /// `effect_context_object` (the earlier-instruction referent) as slot 1.
+    #[test]
+    fn resolve_object_mana_value_anaphoric_reads_effect_context_object() {
+        use crate::types::ability::{CostPaidObjectSnapshot, ResolvedAbility};
+        use crate::types::game_state::LKISnapshot;
+
+        let state = GameState::new_two_player(42);
+        let mut ability = ResolvedAbility::new(
+            Effect::Draw {
+                count: QuantityExpr::Fixed { value: 0 },
+                target: TargetFilter::Controller,
+            },
+            Vec::new(),
+            ObjectId(1),
+            PlayerId(0),
+        );
+        ability.set_effect_context_object_recursive(CostPaidObjectSnapshot {
+            object_id: ObjectId(50),
+            lki: LKISnapshot {
+                name: "Revealed Card".to_string(),
+                power: Some(0),
+                toughness: Some(0),
+                mana_value: 3,
+                controller: PlayerId(0),
+                owner: PlayerId(0),
+                card_types: vec![CoreType::Sorcery],
+                subtypes: vec![],
+                supertypes: vec![],
+                keywords: vec![],
+                colors: vec![],
+                counters: HashMap::new(),
+            },
+        });
+        let expr = QuantityExpr::Ref {
+            qty: QuantityRef::ObjectManaValue {
+                scope: ObjectScope::Anaphoric,
+            },
+        };
+        assert_eq!(
+            resolve_quantity_with_targets(&state, &expr, &ability),
+            3,
+            "Anaphoric slot 1 must read effect_context_object's mana value"
+        );
+    }
+
+    /// CR 608.2c vs CR 608.2k — divergent priority pin: when both slots are
+    /// populated, `Anaphoric` reads `effect_context_object` (608.2c) while
+    /// `CostPaidObject` reads `cost_paid_object` (608.2k). This is the test
+    /// that locks the two arms' priority split.
+    #[test]
+    fn resolve_object_mana_value_anaphoric_vs_cost_paid_divergent_priority() {
+        use crate::types::ability::{CostPaidObjectSnapshot, ResolvedAbility};
+        use crate::types::game_state::LKISnapshot;
+
+        let state = GameState::new_two_player(42);
+        let mut ability = ResolvedAbility::new(
+            Effect::Draw {
+                count: QuantityExpr::Fixed { value: 0 },
+                target: TargetFilter::Controller,
+            },
+            Vec::new(),
+            ObjectId(1),
+            PlayerId(0),
+        );
+        let snapshot = |name: &str, mana_value: u32| CostPaidObjectSnapshot {
+            object_id: ObjectId(50),
+            lki: LKISnapshot {
+                name: name.to_string(),
+                power: Some(1),
+                toughness: Some(1),
+                mana_value,
+                controller: PlayerId(0),
+                owner: PlayerId(0),
+                card_types: vec![CoreType::Creature],
+                subtypes: vec![],
+                supertypes: vec![],
+                keywords: vec![],
+                colors: vec![],
+                counters: HashMap::new(),
+            },
+        };
+        ability.set_effect_context_object_recursive(snapshot("Effect Context", 7));
+        ability.set_cost_paid_object_recursive(snapshot("Cost Paid", 3));
+
+        let anaphoric = QuantityExpr::Ref {
+            qty: QuantityRef::ObjectManaValue {
+                scope: ObjectScope::Anaphoric,
+            },
+        };
+        let cost_paid = QuantityExpr::Ref {
+            qty: QuantityRef::ObjectManaValue {
+                scope: ObjectScope::CostPaidObject,
+            },
+        };
+        assert_eq!(
+            resolve_quantity_with_targets(&state, &anaphoric, &ability),
+            7,
+            "Anaphoric must read effect_context_object (CR 608.2c slot 1)"
+        );
+        assert_eq!(
+            resolve_quantity_with_targets(&state, &cost_paid, &ability),
+            3,
+            "CostPaidObject must still read cost_paid_object (CR 608.2k slot 1)"
+        );
+    }
+
+    /// CR 608.2c — `ObjectScope::Anaphoric` power reads `effect_context_object`
+    /// as slot 1 (the `resolve_object_pt` analogue of the mana-value test).
+    #[test]
+    fn resolve_object_pt_anaphoric_reads_effect_context_object() {
+        use crate::types::ability::{CostPaidObjectSnapshot, ResolvedAbility};
+        use crate::types::game_state::LKISnapshot;
+
+        let state = GameState::new_two_player(42);
+        let mut ability = ResolvedAbility::new(
+            Effect::Draw {
+                count: QuantityExpr::Fixed { value: 0 },
+                target: TargetFilter::Controller,
+            },
+            Vec::new(),
+            ObjectId(1),
+            PlayerId(0),
+        );
+        let snapshot = |name: &str, power: i32| CostPaidObjectSnapshot {
+            object_id: ObjectId(50),
+            lki: LKISnapshot {
+                name: name.to_string(),
+                power: Some(power),
+                toughness: Some(power),
+                mana_value: 0,
+                controller: PlayerId(0),
+                owner: PlayerId(0),
+                card_types: vec![CoreType::Creature],
+                subtypes: vec![],
+                supertypes: vec![],
+                keywords: vec![],
+                colors: vec![],
+                counters: HashMap::new(),
+            },
+        };
+        ability.set_effect_context_object_recursive(snapshot("Effect Context", 5));
+        ability.set_cost_paid_object_recursive(snapshot("Cost Paid", 2));
+
+        let expr = QuantityExpr::Ref {
+            qty: QuantityRef::Power {
+                scope: ObjectScope::Anaphoric,
+            },
+        };
+        assert_eq!(
+            resolve_quantity_with_targets(&state, &expr, &ability),
+            5,
+            "Anaphoric power must read effect_context_object (CR 608.2c slot 1)"
         );
     }
 

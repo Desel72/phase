@@ -2389,8 +2389,11 @@ pub enum PlayerScope {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum ObjectScope {
-    /// CR 109.5 / CR 113.6: The source object of the resolving ability —
+    /// CR 113.7 + CR 113.7a: The source object of the resolving ability —
     /// "this creature", "~", "it" (when "it" anaphors back to the source).
+    /// CR 113.7 defines the source as the object that generated the ability;
+    /// CR 113.7a keeps the ability (and thus its source reference) valid on
+    /// the stack even after the source leaves its expected zone, via LKI.
     Source,
     /// CR 115.1: The first object target of the resolving ability — "that
     /// creature", "the creature", "it" (when "it" anaphors back to a target).
