@@ -2,7 +2,9 @@ use serde::{Deserialize, Serialize};
 
 use super::ability::{LibraryPosition, TargetRef};
 use super::counter::CounterType;
-use super::game_state::{AutoMayChoice, AutoPassRequest, CombatDamageAssignmentMode, ShardChoice};
+use super::game_state::{
+    AutoMayChoice, AutoPassRequest, CastPaymentMode, CombatDamageAssignmentMode, ShardChoice,
+};
 use super::identifiers::{CardId, ObjectId};
 use super::keywords::Keyword;
 use super::mana::ManaType;
@@ -102,6 +104,12 @@ pub enum GameAction {
         card_id: CardId,
         targets: Vec<ObjectId>,
     },
+    CastSpellWithPaymentMode {
+        object_id: ObjectId,
+        card_id: CardId,
+        targets: Vec<ObjectId>,
+        payment_mode: CastPaymentMode,
+    },
     /// CR 702.143a-b: Foretell special action — during your turn while you
     /// have priority, pay {2} and exile this card from your hand. The card
     /// becomes foretold in exile and may be cast on a later turn for its
@@ -165,6 +173,13 @@ pub enum GameAction {
     },
     ChooseReplacement {
         index: usize,
+    },
+    /// CR 603.3b: Player submits the chosen order for their pending triggers.
+    /// `order` is a permutation of indices into the `OrderTriggers.triggers`
+    /// vec the player was prompted with; index 0 = first placed (bottom of
+    /// that controller's group on the stack — resolves last, CR 405.3 LIFO).
+    OrderTriggers {
+        order: Vec<usize>,
     },
     CancelCast,
     Equip {
@@ -285,12 +300,24 @@ pub enum GameAction {
         card_id: CardId,
         creature_to_return: ObjectId,
     },
+    CastSpellAsSneakWithPaymentMode {
+        hand_object: ObjectId,
+        card_id: CardId,
+        creature_to_return: ObjectId,
+        payment_mode: CastPaymentMode,
+    },
     /// CR 702.188a: Cast a spell from HAND via the Web-slinging alternative cost.
     /// The returned creature must be a tapped creature controlled by the caster.
     CastSpellAsWebSlinging {
         hand_object: ObjectId,
         card_id: CardId,
         creature_to_return: ObjectId,
+    },
+    CastSpellAsWebSlingingWithPaymentMode {
+        hand_object: ObjectId,
+        card_id: CardId,
+        creature_to_return: ObjectId,
+        payment_mode: CastPaymentMode,
     },
     /// CR 601.2b + CR 118.9a: Cast a spell from hand for free via a
     /// `StaticMode::CastFromHandFree` permission source (Zaffai and the
@@ -307,6 +334,12 @@ pub enum GameAction {
         card_id: CardId,
         source_id: ObjectId,
     },
+    CastSpellForFreeWithPaymentMode {
+        object_id: ObjectId,
+        card_id: CardId,
+        source_id: ObjectId,
+        payment_mode: CastPaymentMode,
+    },
     /// CR 702.94a + CR 603.11: Accept a pending `WaitingFor::MiracleReveal`
     /// and cast `object_id` from hand for the card's miracle mana cost. Mirror
     /// of `CastSpellAsSneak` / `CastSpellForFree` — dedicated variant because
@@ -316,12 +349,22 @@ pub enum GameAction {
         object_id: ObjectId,
         card_id: CardId,
     },
+    CastSpellAsMiracleWithPaymentMode {
+        object_id: ObjectId,
+        card_id: CardId,
+        payment_mode: CastPaymentMode,
+    },
     /// CR 702.35a: Accept a pending `WaitingFor::MadnessCastOffer` and cast
     /// `object_id` from exile for its madness cost. Decline is via the shared
     /// `DecideOptionalEffect { accept: false }`.
     CastSpellAsMadness {
         object_id: ObjectId,
         card_id: CardId,
+    },
+    CastSpellAsMadnessWithPaymentMode {
+        object_id: ObjectId,
+        card_id: CardId,
+        payment_mode: CastPaymentMode,
     },
     /// CR 609.3: Accept or decline an optional effect ("You may X").
     DecideOptionalEffect {
@@ -920,16 +963,24 @@ impl GameAction {
     pub fn source_object(&self) -> Option<ObjectId> {
         match self {
             GameAction::PlayLand { object_id, .. } => Some(*object_id),
-            GameAction::CastSpell { object_id, .. } => Some(*object_id),
+            GameAction::CastSpell { object_id, .. }
+            | GameAction::CastSpellWithPaymentMode { object_id, .. } => Some(*object_id),
             GameAction::Foretell { object_id, .. } => Some(*object_id),
-            GameAction::CastSpellAsSneak { hand_object, .. } => Some(*hand_object),
-            GameAction::CastSpellAsWebSlinging { hand_object, .. } => Some(*hand_object),
+            GameAction::CastSpellAsSneak { hand_object, .. }
+            | GameAction::CastSpellAsSneakWithPaymentMode { hand_object, .. } => Some(*hand_object),
+            GameAction::CastSpellAsWebSlinging { hand_object, .. }
+            | GameAction::CastSpellAsWebSlingingWithPaymentMode { hand_object, .. } => {
+                Some(*hand_object)
+            }
             GameAction::ActivateNinjutsu {
                 ninjutsu_object_id, ..
             } => Some(*ninjutsu_object_id),
-            GameAction::CastSpellForFree { object_id, .. } => Some(*object_id),
-            GameAction::CastSpellAsMiracle { object_id, .. } => Some(*object_id),
-            GameAction::CastSpellAsMadness { object_id, .. } => Some(*object_id),
+            GameAction::CastSpellForFree { object_id, .. }
+            | GameAction::CastSpellForFreeWithPaymentMode { object_id, .. }
+            | GameAction::CastSpellAsMiracle { object_id, .. }
+            | GameAction::CastSpellAsMiracleWithPaymentMode { object_id, .. }
+            | GameAction::CastSpellAsMadness { object_id, .. }
+            | GameAction::CastSpellAsMadnessWithPaymentMode { object_id, .. } => Some(*object_id),
             GameAction::ActivateAbility { source_id, .. } => Some(*source_id),
             GameAction::TapLandForMana { object_id } => Some(*object_id),
             GameAction::UntapLandForMana { object_id } => Some(*object_id),
@@ -960,6 +1011,7 @@ impl GameAction {
             | GameAction::SelectTargets { .. }
             | GameAction::ChooseTarget { .. }
             | GameAction::ChooseReplacement { .. }
+            | GameAction::OrderTriggers { .. }
             | GameAction::CancelCast
             | GameAction::SubmitSideboard { .. }
             | GameAction::ChoosePlayDraw { .. }

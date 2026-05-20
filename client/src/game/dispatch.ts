@@ -12,6 +12,7 @@ import { isMultiplayerMode, useGameStore, legalResultState, saveGame, saveCheckp
 import { getOpponentDisplayName } from "../stores/multiplayerStore";
 import { usePreferencesStore } from "../stores/preferencesStore";
 import { useUiStore } from "../stores/uiStore";
+import { applySpellPaymentPreference } from "./castPaymentMode";
 
 /**
  * Event types whose SFX is deferred to the card slam onImpact callback
@@ -389,6 +390,8 @@ export async function dispatchAction(
   action: GameAction,
   actor: number = getPlayerId(),
 ): Promise<void> {
+  const submittedAction = actor === getPlayerId() ? applySpellPaymentPreference(action) : action;
+
   if (isAnimating) {
     // Enqueue-time de-dup: if the exact same action from the same actor is
     // already in flight or already queued, silently resolve. Covers rapid
@@ -399,7 +402,7 @@ export async function dispatchAction(
     if (
       inFlightLocalAction &&
       inFlightLocalAction.actor === actor &&
-      actionsEqual(inFlightLocalAction.action, action)
+      actionsEqual(inFlightLocalAction.action, submittedAction)
     ) {
       return;
     }
@@ -407,23 +410,23 @@ export async function dispatchAction(
       if (
         pending.kind === "local" &&
         pending.actor === actor &&
-        actionsEqual(pending.action, action)
+        actionsEqual(pending.action, submittedAction)
       ) {
         return;
       }
     }
-    debugLog(`dispatch queued (mutex held): ${action.type}, queue=${pendingQueue.length}`, "warn");
+    debugLog(`dispatch queued (mutex held): ${submittedAction.type}, queue=${pendingQueue.length}`, "warn");
     return new Promise<void>((resolve, reject) => {
-      pendingQueue.push({ kind: "local", action, actor, resolve, reject });
+      pendingQueue.push({ kind: "local", action: submittedAction, actor, resolve, reject });
     });
   }
 
   isAnimating = true;
-  inFlightLocalAction = { action, actor };
+  inFlightLocalAction = { action: submittedAction, actor };
   try {
-    await processAction(action, actor);
+    await processAction(submittedAction, actor);
   } catch (e) {
-    debugLog(`dispatch error for ${action.type}: ${e instanceof Error ? e.message : String(e)}`);
+    debugLog(`dispatch error for ${submittedAction.type}: ${e instanceof Error ? e.message : String(e)}`);
     throw e;
   } finally {
     inFlightLocalAction = null;

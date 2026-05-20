@@ -159,6 +159,65 @@ fn collect_evidence_candidate_combos(
     combos
 }
 
+/// CR 603.3b: Enumerate candidate orderings for a `WaitingFor::OrderTriggers`
+/// group of `len` triggers. Identity + reverse are always emitted; for
+/// `len <= 4` every permutation is enumerated (max 24 candidates at len 4).
+/// Larger groups don't enumerate full permutations to avoid factorial blowup
+/// (5! = 120, 6! = 720, 8! = 40320). AI evaluation needs no change — ordering
+/// only affects resolution sequence, which existing search scores via lookahead.
+fn order_triggers_candidates(player: PlayerId, len: usize) -> Vec<CandidateAction> {
+    if len == 0 {
+        return Vec::new();
+    }
+    let identity: Vec<usize> = (0..len).collect();
+    let mut orderings: Vec<Vec<usize>> = Vec::new();
+    if len <= 4 {
+        permute_into(
+            &identity,
+            &mut Vec::new(),
+            &mut vec![false; len],
+            &mut orderings,
+        );
+    } else {
+        orderings.push(identity.clone());
+        let mut reverse = identity.clone();
+        reverse.reverse();
+        orderings.push(reverse);
+    }
+    orderings
+        .into_iter()
+        .map(|order| {
+            candidate(
+                GameAction::OrderTriggers { order },
+                TacticalClass::Selection,
+                Some(player),
+            )
+        })
+        .collect()
+}
+
+fn permute_into(
+    items: &[usize],
+    current: &mut Vec<usize>,
+    used: &mut [bool],
+    out: &mut Vec<Vec<usize>>,
+) {
+    if current.len() == items.len() {
+        out.push(current.clone());
+        return;
+    }
+    for (i, &item) in items.iter().enumerate() {
+        if used[i] {
+            continue;
+        }
+        used[i] = true;
+        current.push(item);
+        permute_into(items, current, used, out);
+        current.pop();
+        used[i] = false;
+    }
+}
+
 /// `GameAction::Concede` is intentionally NOT produced by any of the
 /// `candidate_actions*` enumerators. Per CR 104.3a a player may concede "at any
 /// time" regardless of priority or `WaitingFor` state, so `engine.rs::apply()`
@@ -182,6 +241,14 @@ pub fn candidate_actions_exact(state: &GameState) -> Vec<CandidateAction> {
                 )
             })
             .collect(),
+        // CR 603.3b: Trigger ordering enumeration. Full n! permutations explode
+        // (8! = 40320) so cap at n <= 4 (24 perms); larger groups generate only
+        // identity + reverse, which is enough variety for search lookahead to
+        // see "front-load vs back-load this resolution sequence" while keeping
+        // branching tractable.
+        WaitingFor::OrderTriggers {
+            player, triggers, ..
+        } => order_triggers_candidates(*player, triggers.len()),
         WaitingFor::CopyTargetChoice {
             player,
             valid_targets,
@@ -1836,6 +1903,7 @@ pub fn candidate_actions_broad(state: &GameState) -> Vec<CandidateAction> {
         | WaitingFor::TopOrBottomChoice { .. }
         | WaitingFor::ClashCardPlacement { .. }
         | WaitingFor::BetweenGamesChoosePlayDraw { .. }
+        | WaitingFor::OrderTriggers { .. }
         | WaitingFor::MulliganDecision { .. }
         | WaitingFor::MulliganBottomCards { .. } => Vec::new(),
         // CR 702.xxx: Paradigm (Strixhaven) — enumerate each exiled paradigm
@@ -4150,6 +4218,7 @@ mod tests {
             player: PlayerId(0),
             object_id: crate::types::identifiers::ObjectId(1),
             card_id: CardId(70),
+            payment_mode: crate::types::game_state::CastPaymentMode::Auto,
         };
 
         let actions = candidate_actions(&state);

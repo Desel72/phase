@@ -423,7 +423,7 @@ mod tests {
     use crate::types::ability::{BeholdCostAction, Effect, ResolvedAbility};
     use crate::types::format::FormatConfig;
     use crate::types::game_state::{
-        AutoMayChoice, CastingVariant, MayTriggerAutoChoiceKey, MayTriggerOrigin,
+        AutoMayChoice, CastPaymentMode, CastingVariant, MayTriggerAutoChoiceKey, MayTriggerOrigin,
         PendingBeginGameAbility, PendingCast,
     };
     use crate::types::identifiers::CardId;
@@ -462,6 +462,7 @@ mod tests {
             declared_kickers_to_pay: Vec::new(),
             declined_kickers: Vec::new(),
             convoked_creatures: Vec::new(),
+            payment_mode: CastPaymentMode::Auto,
         })
     }
 

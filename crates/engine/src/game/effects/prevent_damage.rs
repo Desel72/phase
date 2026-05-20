@@ -577,6 +577,7 @@ mod tests {
             &mut state,
             None,
             None,
+            None,
             &mut events,
         );
 

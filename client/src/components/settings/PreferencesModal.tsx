@@ -111,12 +111,14 @@ export function PreferencesModal({
 
   const cardSize = usePreferencesStore((s) => s.cardSize);
   const logDefaultState = usePreferencesStore((s) => s.logDefaultState);
+  const spellPaymentMode = usePreferencesStore((s) => s.spellPaymentMode);
   const boardBackground = usePreferencesStore((s) => s.boardBackground);
   const vfxQuality = usePreferencesStore((s) => s.vfxQuality);
   const animationSpeedMultiplier = usePreferencesStore((s) => s.animationSpeedMultiplier);
   const pacingMultipliers = usePreferencesStore((s) => s.pacingMultipliers);
   const setCardSize = usePreferencesStore((s) => s.setCardSize);
   const setLogDefaultState = usePreferencesStore((s) => s.setLogDefaultState);
+  const setSpellPaymentMode = usePreferencesStore((s) => s.setSpellPaymentMode);
   const setBoardBackground = usePreferencesStore((s) => s.setBoardBackground);
   const customBackgroundUrl = usePreferencesStore((s) => s.customBackgroundUrl);
   const setCustomBackgroundUrl = usePreferencesStore((s) => s.setCustomBackgroundUrl);
@@ -242,6 +244,18 @@ export function PreferencesModal({
                       value={logDefaultState}
                       onChange={setLogDefaultState}
                     />
+                  </SettingGroup>
+
+                  <SettingGroup label="Spell Payment">
+                    <label className="flex min-h-11 items-center gap-2">
+                      <input
+                        type="checkbox"
+                        checked={spellPaymentMode === "manual"}
+                        onChange={(e) => setSpellPaymentMode(e.target.checked ? "manual" : "auto")}
+                        className="accent-cyan-500"
+                      />
+                      <span className="text-sm text-slate-200">Manual mana payment for spells</span>
+                    </label>
                   </SettingGroup>
 
                   <div

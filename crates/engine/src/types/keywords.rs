@@ -624,9 +624,11 @@ pub enum Keyword {
     Bloodthirst(BloodthirstValue),
     Amplify(u32),
     Graft(u32),
-    /// RUNTIME: TODO — converter accepts this keyword but engine has no
-    /// behavioral handler (ETB-replacement sacrifice-and-counter mechanic
-    /// not wired). CR 702.82a: Devour N — as it enters, you may sacrifice any
+    /// RUNTIME: synthesized as-enters replacement by
+    /// `database/synthesis.rs::synthesize_devour` — a `ReplacementEvent::Moved`
+    /// replacement on `SelfRef` whose execute chain is a ranged `Effect::Sacrifice`
+    /// over the controller's creatures + a per-sacrifice `PutCounter(+1/+1)`
+    /// sub-ability. CR 702.82a: Devour N — as it enters, you may sacrifice any
     /// number of creatures; it enters with N +1/+1 counters per sacrifice.
     Devour(u32),
 

@@ -326,6 +326,7 @@ pub(super) fn handle_harmonize_tap_choice(
         pending.cast_timing_permission,
         pending.distribute,
         pending.origin_zone,
+        pending.payment_mode,
         events,
     )
 }

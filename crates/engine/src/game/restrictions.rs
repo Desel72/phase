@@ -665,7 +665,8 @@ fn activation_restriction_applies(
             let limit = effective_activation_limit(state, player, source_id, ability_index);
             current_count < limit
         }
-        // CR 602.5b: Per-game activation limit.
+        // CR 602.5b: Per-object activation limit. `zones::move_to_zone` clears
+        // this count when CR 400.7 makes the stored id represent a new object.
         ActivationRestriction::OnlyOnce => {
             state
                 .activated_abilities_this_game

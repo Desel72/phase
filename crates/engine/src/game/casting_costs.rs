@@ -7,8 +7,8 @@ use crate::types::ability::{
 };
 use crate::types::events::{GameEvent, ManaTapState};
 use crate::types::game_state::{
-    CastingVariant, ConvokeMode, DistributionUnit, GameState, PendingCast, StackEntry,
-    StackEntryKind, WaitingFor,
+    CastPaymentMode, CastingVariant, ConvokeMode, DistributionUnit, GameState, PendingCast,
+    StackEntry, StackEntryKind, WaitingFor,
 };
 use crate::types::identifiers::{CardId, ObjectId};
 use crate::types::keywords::Keyword;
@@ -432,6 +432,7 @@ fn finish_pending_cost_or_cast(
         pending.cast_timing_permission,
         pending.distribute,
         pending.origin_zone,
+        pending.payment_mode,
         events,
     )
 }
@@ -1043,6 +1044,7 @@ pub(super) fn check_additional_cost_or_pay(
     casting_variant: CastingVariant,
     cast_timing_permission: Option<CastTimingPermission>,
     origin_zone: Zone,
+    payment_mode: CastPaymentMode,
     events: &mut Vec<GameEvent>,
 ) -> Result<WaitingFor, EngineError> {
     check_additional_cost_or_pay_with_distribute(
@@ -1056,6 +1058,7 @@ pub(super) fn check_additional_cost_or_pay(
         cast_timing_permission,
         None,
         origin_zone,
+        payment_mode,
         events,
     )
 }
@@ -1083,6 +1086,7 @@ pub(super) fn finish_pending_cast_cost_or_pay(
     let cast_timing_permission = pending.cast_timing_permission;
     let distribute = pending.distribute;
     let origin_zone = pending.origin_zone;
+    let payment_mode = pending.payment_mode;
     let cost = pending.cost;
     let ability = pending.ability;
     check_additional_cost_or_pay_with_distribute(
@@ -1096,6 +1100,7 @@ pub(super) fn finish_pending_cast_cost_or_pay(
         cast_timing_permission,
         distribute,
         origin_zone,
+        payment_mode,
         events,
     )
 }
@@ -1113,6 +1118,7 @@ pub(super) fn begin_modal_additional_cost_declaration(
     modal: crate::types::ability::ModalChoice,
     distribute: Option<DistributionUnit>,
     origin_zone: Zone,
+    payment_mode: CastPaymentMode,
     events: &mut Vec<GameEvent>,
 ) -> Result<WaitingFor, EngineError> {
     let additional = state
@@ -1128,6 +1134,7 @@ pub(super) fn begin_modal_additional_cost_declaration(
         pending.cast_timing_permission = cast_timing_permission;
         pending.distribute = distribute;
         pending.origin_zone = origin_zone;
+        pending.payment_mode = payment_mode;
         pending.target_constraints = target_constraints_from_modal(&capped);
         return Ok(WaitingFor::ModeChoice {
             player,
@@ -1141,6 +1148,7 @@ pub(super) fn begin_modal_additional_cost_declaration(
     pending.cast_timing_permission = cast_timing_permission;
     pending.distribute = distribute;
     pending.origin_zone = origin_zone;
+    pending.payment_mode = payment_mode;
     pending.deferred_modal_choice = Some(modal);
     pending.additional_cost_flow = Some(AdditionalCost::Kicker { costs, repeatable });
     finish_pending_cost_or_cast(state, player, pending, events)
@@ -1158,6 +1166,7 @@ pub(super) fn begin_target_dependent_additional_cost_declaration(
     cast_timing_permission: Option<CastTimingPermission>,
     distribute: Option<DistributionUnit>,
     origin_zone: Zone,
+    payment_mode: CastPaymentMode,
     events: &mut Vec<GameEvent>,
 ) -> Result<WaitingFor, EngineError> {
     let additional = state
@@ -1176,6 +1185,7 @@ pub(super) fn begin_target_dependent_additional_cost_declaration(
             cast_timing_permission,
             distribute,
             origin_zone,
+            payment_mode,
             events,
         );
     };
@@ -1185,6 +1195,7 @@ pub(super) fn begin_target_dependent_additional_cost_declaration(
     pending.cast_timing_permission = cast_timing_permission;
     pending.distribute = distribute;
     pending.origin_zone = origin_zone;
+    pending.payment_mode = payment_mode;
     pending.deferred_target_selection = true;
     pending.additional_cost_flow = Some(AdditionalCost::Kicker { costs, repeatable });
     finish_pending_cost_or_cast(state, player, pending, events)
@@ -1206,6 +1217,7 @@ pub(super) fn begin_optional_cost_before_targets(
     cast_timing_permission: Option<CastTimingPermission>,
     distribute: Option<DistributionUnit>,
     origin_zone: Zone,
+    payment_mode: CastPaymentMode,
     events: &mut Vec<GameEvent>,
 ) -> Result<WaitingFor, EngineError> {
     let mut pending = PendingCast::new(object_id, card_id, ability, cost);
@@ -1213,6 +1225,7 @@ pub(super) fn begin_optional_cost_before_targets(
     pending.cast_timing_permission = cast_timing_permission;
     pending.distribute = distribute;
     pending.origin_zone = origin_zone;
+    pending.payment_mode = payment_mode;
     pending.deferred_target_selection = true;
     pending.additional_cost_flow = Some(optional_cost);
     finish_pending_cost_or_cast(state, player, pending, events)
@@ -1233,6 +1246,7 @@ pub(super) fn check_additional_cost_or_pay_with_distribute(
     cast_timing_permission: Option<CastTimingPermission>,
     distribute: Option<DistributionUnit>,
     origin_zone: Zone,
+    payment_mode: CastPaymentMode,
     events: &mut Vec<GameEvent>,
 ) -> Result<WaitingFor, EngineError> {
     // CR 601.3d + CR 702.8a: When the cast was authorized as-though-it-had-flash
@@ -1349,6 +1363,7 @@ pub(super) fn check_additional_cost_or_pay_with_distribute(
             pending.cast_timing_permission = cast_timing_permission;
             pending.distribute = distribute.clone();
             pending.origin_zone = origin_zone;
+            pending.payment_mode = payment_mode;
             return Ok(WaitingFor::OptionalCostChoice {
                 player,
                 cost: AdditionalCost::Choice(alt_cost, AbilityCost::Mana { cost: cost.clone() }),
@@ -1373,6 +1388,7 @@ pub(super) fn check_additional_cost_or_pay_with_distribute(
                 pending.casting_variant = casting_variant;
                 pending.cast_timing_permission = cast_timing_permission;
                 pending.origin_zone = origin_zone;
+                pending.payment_mode = payment_mode;
                 return pay_additional_cost(state, player, req_cost.clone(), pending, events);
             }
             AdditionalCost::Kicker { costs, repeatable } => {
@@ -1381,6 +1397,7 @@ pub(super) fn check_additional_cost_or_pay_with_distribute(
                 pending.cast_timing_permission = cast_timing_permission;
                 pending.distribute = distribute.clone();
                 pending.origin_zone = origin_zone;
+                pending.payment_mode = payment_mode;
                 if costs.is_empty() {
                     return finish_pending_cost_or_cast(state, player, pending, events);
                 }
@@ -1406,6 +1423,7 @@ pub(super) fn check_additional_cost_or_pay_with_distribute(
                 pending.cast_timing_permission = cast_timing_permission;
                 pending.distribute = distribute.clone();
                 pending.origin_zone = origin_zone;
+                pending.payment_mode = payment_mode;
                 // When a Required cost was deferred so Casualty could be offered first
                 // (e.g., Village Rites + Casualty), stash it so finish_pending_cost_or_cast
                 // can pay it after the Casualty decision.
@@ -1429,6 +1447,7 @@ pub(super) fn check_additional_cost_or_pay_with_distribute(
                 pending.cast_timing_permission = cast_timing_permission;
                 pending.distribute = distribute;
                 pending.origin_zone = origin_zone;
+                pending.payment_mode = payment_mode;
                 // CR 601.2b: If the preferred branch is unpayable, fall through
                 // to the fallback without prompting. If both are unpayable, the
                 // spell cannot be cast.
@@ -1470,6 +1489,7 @@ pub(super) fn check_additional_cost_or_pay_with_distribute(
         pending.casting_variant = casting_variant;
         pending.cast_timing_permission = cast_timing_permission;
         pending.origin_zone = origin_zone;
+        pending.payment_mode = payment_mode;
         return pay_additional_cost(
             state,
             player,
@@ -1526,6 +1546,7 @@ pub(super) fn check_additional_cost_or_pay_with_distribute(
         pending.cast_timing_permission = cast_timing_permission;
         pending.distribute = distribute;
         pending.origin_zone = origin_zone;
+        pending.payment_mode = payment_mode;
         return pay_additional_cost(state, player, alt_cost, pending, events);
     }
 
@@ -1536,6 +1557,7 @@ pub(super) fn check_additional_cost_or_pay_with_distribute(
             pending.casting_variant = casting_variant;
             pending.cast_timing_permission = cast_timing_permission;
             pending.origin_zone = origin_zone;
+            pending.payment_mode = payment_mode;
             return pay_additional_cost(
                 state,
                 player,
@@ -1558,6 +1580,7 @@ pub(super) fn check_additional_cost_or_pay_with_distribute(
         pending.cast_timing_permission = cast_timing_permission;
         pending.distribute = distribute;
         pending.origin_zone = origin_zone;
+        pending.payment_mode = payment_mode;
         return pay_additional_cost(state, player, retrace_discard_land_cost(), pending, events);
     }
 
@@ -1577,6 +1600,7 @@ pub(super) fn check_additional_cost_or_pay_with_distribute(
             pending.cast_timing_permission = cast_timing_permission;
             pending.distribute = distribute;
             pending.origin_zone = origin_zone;
+            pending.payment_mode = payment_mode;
             return pay_additional_cost(state, player, non_mana_cost, pending, events);
         }
     }
@@ -1589,6 +1613,7 @@ pub(super) fn check_additional_cost_or_pay_with_distribute(
         pending.cast_timing_permission = cast_timing_permission;
         pending.distribute = distribute;
         pending.origin_zone = origin_zone;
+        pending.payment_mode = payment_mode;
         return Ok(WaitingFor::DefilerPayment {
             player,
             life_cost,
@@ -1608,6 +1633,7 @@ pub(super) fn check_additional_cost_or_pay_with_distribute(
         cast_timing_permission,
         distribute,
         origin_zone,
+        payment_mode,
         events,
     )
 }
@@ -1747,6 +1773,7 @@ pub(crate) fn handle_defiler_payment(
                 pending.cast_timing_permission,
                 pending.distribute,
                 pending.origin_zone,
+                pending.payment_mode,
                 events,
             );
         }
@@ -1791,6 +1818,7 @@ pub(crate) fn handle_defiler_payment(
         pending.cast_timing_permission,
         pending.distribute,
         pending.origin_zone,
+        pending.payment_mode,
         events,
     )
 }
@@ -2151,6 +2179,7 @@ pub(super) fn pay_and_push(
     cast_timing_permission: Option<CastTimingPermission>,
     distribute: Option<DistributionUnit>,
     origin_zone: Zone,
+    payment_mode: CastPaymentMode,
     events: &mut Vec<GameEvent>,
 ) -> Result<WaitingFor, EngineError> {
     // CR 702.180a/b: Harmonize — offer optional creature tap to reduce generic mana cost.
@@ -2179,6 +2208,7 @@ pub(super) fn pay_and_push(
                 pending.casting_variant = casting_variant;
                 pending.cast_timing_permission = cast_timing_permission;
                 pending.origin_zone = origin_zone;
+                pending.payment_mode = payment_mode;
                 return Ok(WaitingFor::HarmonizeTapChoice {
                     player,
                     eligible_creatures: eligible,
@@ -2199,6 +2229,7 @@ pub(super) fn pay_and_push(
         cast_timing_permission,
         distribute,
         origin_zone,
+        payment_mode,
         events,
     )
 }
@@ -2215,6 +2246,7 @@ pub(super) fn pay_and_push_adventure(
     cast_timing_permission: Option<CastTimingPermission>,
     distribute: Option<DistributionUnit>,
     origin_zone: Zone,
+    payment_mode: CastPaymentMode,
     events: &mut Vec<GameEvent>,
 ) -> Result<WaitingFor, EngineError> {
     // CR 702.51a: Convoke lets players tap creatures to reduce mana cost.
@@ -2254,12 +2286,14 @@ pub(super) fn pay_and_push_adventure(
     // `enter_payment_step` diverts to `ChooseXValue` when the cost has an unchosen X,
     // per CR 601.2f (X chosen before mana is paid).
     let has_x = cost_has_x(cost);
-    if has_x || convoke_mode.is_some() {
+    let manual_payment = payment_mode == CastPaymentMode::Manual && cost.mana_value() > 0;
+    if has_x || convoke_mode.is_some() || manual_payment {
         let mut pending = PendingCast::new(object_id, card_id, ability, cost.clone());
         pending.casting_variant = casting_variant;
         pending.cast_timing_permission = cast_timing_permission;
         pending.distribute = distribute;
         pending.origin_zone = origin_zone;
+        pending.payment_mode = payment_mode;
         state.pending_cast = Some(Box::new(pending));
         return enter_payment_step(state, player, convoke_mode, events);
     }
@@ -2274,6 +2308,7 @@ pub(super) fn pay_and_push_adventure(
         pending.cast_timing_permission = cast_timing_permission;
         pending.distribute = distribute;
         pending.origin_zone = origin_zone;
+        pending.payment_mode = payment_mode;
         state.pending_cast = Some(Box::new(pending));
         return Ok(waiting);
     }
@@ -3630,8 +3665,9 @@ pub fn enter_payment_step(
     // the caster to choose which creatures to tap, so it always surfaces the modal.
     if convoke_mode.is_none() {
         if let Some(pending) = state.pending_cast.as_ref() {
-            if mana_payment::classify_payment(&pending.cost)
-                == mana_payment::PaymentClassification::Unambiguous
+            if pending.payment_mode == CastPaymentMode::Auto
+                && mana_payment::classify_payment(&pending.cost)
+                    == mana_payment::PaymentClassification::Unambiguous
             {
                 return finalize_mana_payment(state, player, events);
             }
@@ -4095,6 +4131,7 @@ mod tests {
             declared_kickers_to_pay: Vec::new(),
             declined_kickers: Vec::new(),
             convoked_creatures: Vec::new(),
+            payment_mode: CastPaymentMode::Auto,
         }
     }
 
@@ -4244,6 +4281,7 @@ mod tests {
             None,
             None,
             Zone::Hand,
+            CastPaymentMode::Auto,
             &mut events,
         )
         .expect("granted casualty should be castable");
@@ -6652,6 +6690,7 @@ mod tests {
             declared_kickers_to_pay: Vec::new(),
             declined_kickers: Vec::new(),
             convoked_creatures: Vec::new(),
+            payment_mode: CastPaymentMode::Auto,
         };
 
         let result = pay_additional_cost(
@@ -6768,6 +6807,7 @@ mod tests {
             declared_kickers_to_pay: Vec::new(),
             declined_kickers: Vec::new(),
             convoked_creatures: Vec::new(),
+            payment_mode: CastPaymentMode::Auto,
         };
 
         let mut events = Vec::new();
@@ -6853,6 +6893,7 @@ mod tests {
             declared_kickers_to_pay: Vec::new(),
             declined_kickers: Vec::new(),
             convoked_creatures: Vec::new(),
+            payment_mode: CastPaymentMode::Auto,
         };
 
         // Exactly one card is required. Selecting two must fail.
@@ -6927,6 +6968,7 @@ mod tests {
             declared_kickers_to_pay: Vec::new(),
             declined_kickers: Vec::new(),
             convoked_creatures: Vec::new(),
+            payment_mode: CastPaymentMode::Auto,
         };
 
         // `red` is not in the legal-cards list, so the cost handler must reject
@@ -7034,6 +7076,7 @@ mod tests {
             declared_kickers_to_pay: Vec::new(),
             declined_kickers: Vec::new(),
             convoked_creatures: Vec::new(),
+            payment_mode: CastPaymentMode::Auto,
         };
 
         let result = pay_additional_cost(

@@ -108,6 +108,26 @@ fn cheap_reject_candidate(state: &GameState, action: &GameAction) -> bool {
             },
             GameAction::ChooseReplacement { index },
         ) => *index >= *candidate_count,
+        // CR 603.3b: Order must be a permutation of 0..triggers.len() — same
+        // validity check the engine handler enforces. Reject early so the
+        // simulation filter never fires a known-rejected action.
+        (WaitingFor::OrderTriggers { triggers, .. }, GameAction::OrderTriggers { order }) => {
+            let len = triggers.len();
+            if order.len() != len {
+                true
+            } else {
+                let mut seen = vec![false; len];
+                let mut bad = false;
+                for &i in order {
+                    if i >= len || seen[i] {
+                        bad = true;
+                        break;
+                    }
+                    seen[i] = true;
+                }
+                bad
+            }
+        }
         (
             WaitingFor::CopyTargetChoice { valid_targets, .. },
             GameAction::ChooseTarget { target },

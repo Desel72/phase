@@ -13,6 +13,7 @@ import type {
   WaitingFor,
 } from "../adapter/types";
 import { MAX_UNDO_HISTORY, UNDOABLE_ACTIONS } from "../constants/game";
+import { applySpellPaymentPreference } from "../game/castPaymentMode";
 import { getPlayerId } from "../hooks/usePlayerId";
 import { loadCheckpoints, saveGame } from "../services/gamePersistence";
 
@@ -209,6 +210,7 @@ export const useGameStore = create<GameStore>()(
     },
 
     dispatch: async (action) => {
+      const submittedAction = applySpellPaymentPreference(action);
       const { adapter, gameState, gameId, gameMode } = get();
       if (!adapter || !gameState) {
         throw new Error("Game not initialized");
@@ -223,14 +225,14 @@ export const useGameStore = create<GameStore>()(
       //    so undo always lands the player before the most recent
       //    activation/trigger sequence, never mid-resolution.
       const shouldSaveHistory =
-        UNDOABLE_ACTIONS.has(action.type) &&
+        UNDOABLE_ACTIONS.has(submittedAction.type) &&
         !isMultiplayerMode(gameMode) &&
         gameState.stack.length === 0;
 
       // `getPlayerId()` returns the local human's authenticated seat ID.
       // The engine rejects the action if this doesn't match the authorized
       // submitter — never trust the UI to route actions to the right seat.
-      const result = await adapter.submitAction(action, getPlayerId());
+      const result = await adapter.submitAction(submittedAction, getPlayerId());
       const newState = await adapter.getState();
       const legalResult = await adapter.getLegalActions();
 

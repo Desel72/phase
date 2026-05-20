@@ -838,7 +838,7 @@ fn fire_combat_prevention_riders(
         state.post_replacement_continuation =
             Some(crate::types::ability::PostReplacementContinuation::Resolved(runtime));
         let _ = crate::game::engine_replacement::apply_pending_post_replacement_effect(
-            state, None, None, events,
+            state, None, None, None, events,
         );
     }
 }

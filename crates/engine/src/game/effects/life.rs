@@ -180,7 +180,7 @@ pub fn apply_life_gain(
 fn drain_substitution_continuation(state: &mut GameState, events: &mut Vec<GameEvent>) {
     if state.post_replacement_continuation.is_some() {
         let _ = crate::game::engine_replacement::apply_pending_post_replacement_effect(
-            state, None, None, events,
+            state, None, None, None, events,
         );
     }
 }

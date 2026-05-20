@@ -53,6 +53,7 @@ export type HudLayout = "inline" | "floating";
 export type LogDefaultState = "open" | "closed";
 export type BattlefieldCardDisplay = "art_crop" | "full_card";
 export type TapRotation = "mtga" | "classic";
+export type SpellPaymentMode = "auto" | "manual";
 /** "auto-wubrg" picks a random battlefield matching the dominant mana color.
  *  "random" picks a random battlefield each game regardless of color.
  *  "none" disables the background image.
@@ -113,6 +114,7 @@ function buildDefaultPreferences(): PreferencesState {
     customThemeUrls: [],
     battlefieldCardDisplay: "art_crop",
     tapRotation: "mtga",
+    spellPaymentMode: "auto",
     showKeywordStrip: true,
     battlefieldPeekOnHover: true,
     aiSeats: [defaultAiSeat()],
@@ -156,6 +158,7 @@ interface PreferencesState {
   customThemeUrls: Array<{ id: string; url: string }>;
   battlefieldCardDisplay: BattlefieldCardDisplay;
   tapRotation: TapRotation;
+  spellPaymentMode: SpellPaymentMode;
   showKeywordStrip: boolean;
   /** When true, hovering an unfocused opponent's tab opens a small popover
    *  previewing that opponent's nonland permanents. Disable for a quieter
@@ -202,6 +205,7 @@ interface PreferencesActions {
   removeCustomThemeUrl: (id: string) => void;
   setBattlefieldCardDisplay: (display: BattlefieldCardDisplay) => void;
   setTapRotation: (rotation: TapRotation) => void;
+  setSpellPaymentMode: (mode: SpellPaymentMode) => void;
   setShowKeywordStrip: (show: boolean) => void;
   setBattlefieldPeekOnHover: (enabled: boolean) => void;
   setAiSeatDifficulty: (index: number, difficulty: AIDifficulty) => void;
@@ -306,6 +310,7 @@ export const usePreferencesStore = create<PreferencesState & PreferencesActions>
         })),
       setBattlefieldCardDisplay: (display) => set({ battlefieldCardDisplay: display }),
       setTapRotation: (rotation) => set({ tapRotation: rotation }),
+      setSpellPaymentMode: (mode) => set({ spellPaymentMode: mode }),
       setShowKeywordStrip: (show) => set({ showKeywordStrip: show }),
       setBattlefieldPeekOnHover: (enabled) => set({ battlefieldPeekOnHover: enabled }),
       setAiSeatDifficulty: (index, difficulty) =>
@@ -390,7 +395,7 @@ export const usePreferencesStore = create<PreferencesState & PreferencesActions>
     }),
     {
       name: "phase-preferences",
-      version: 7,
+      version: 8,
       // v0 → v1: flat aiDifficulty + aiDeckName become aiSeats[0].
       // v1 → v2: discrete animationSpeed/combatPacing enums become numeric
       //          animationSpeedMultiplier/combatPacingMultiplier.
@@ -404,6 +409,7 @@ export const usePreferencesStore = create<PreferencesState & PreferencesActions>
       // v4 → v5: Add artStrategy and artOverrides for card art preferences.
       // v5 → v6: Replace artStrategy (single enum) with artChain (ordered preference list).
       // v6 → v7: Add aiBracketFilter; legacy stores default to empty (filter off).
+      // v7 → v8: Add spellPaymentMode; legacy stores keep default auto.
       migrate: (persisted: unknown, version: number) => {
         if (!persisted || typeof persisted !== "object") return persisted;
         let migrated = persisted as Record<string, unknown>;
@@ -491,6 +497,10 @@ export const usePreferencesStore = create<PreferencesState & PreferencesActions>
             ...legacy,
             aiBracketFilter: Array.isArray(legacy.aiBracketFilter) ? legacy.aiBracketFilter : [],
           };
+        }
+
+        if (version < 8) {
+          migrated = { ...migrated, spellPaymentMode: "auto" };
         }
 
         return migrated;

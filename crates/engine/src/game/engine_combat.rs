@@ -43,6 +43,12 @@ pub(super) fn handle_declare_attackers(
     super::combat::declare_attackers(state, attacks, events).map_err(EngineError::InvalidAction)?;
 
     triggers::process_triggers(state, events);
+    // CR 603.3b (#531): if process_triggers paused on OrderTriggers (the
+    // active player has 2+ simultaneous triggers awaiting their ordering
+    // choice), surface that prompt instead of overwriting it with Priority.
+    if matches!(state.waiting_for, WaitingFor::OrderTriggers { .. }) {
+        return Ok(state.waiting_for.clone());
+    }
     if let Some(waiting_for) = begin_pending_trigger_target_selection(state)? {
         return Ok(waiting_for);
     }
@@ -189,6 +195,12 @@ fn resume_declare_attackers(
     super::combat::declare_attackers(state, attacks, events).map_err(EngineError::InvalidAction)?;
 
     triggers::process_triggers(state, events);
+    // CR 603.3b (#531): process_triggers may have paused on OrderTriggers
+    // for a player with 2+ simultaneous triggers. Propagate that prompt
+    // instead of overwriting it with Priority below.
+    if matches!(state.waiting_for, WaitingFor::OrderTriggers { .. }) {
+        return Ok(state.waiting_for.clone());
+    }
     if let Some(waiting_for) = begin_pending_trigger_target_selection(state)? {
         return Ok(waiting_for);
     }
@@ -434,6 +446,12 @@ pub(super) fn handle_empty_attackers(
     super::combat::declare_attackers(state, &[], events).map_err(EngineError::InvalidAction)?;
 
     triggers::process_triggers(state, events);
+    // CR 603.3b (#531): if process_triggers paused on OrderTriggers (the
+    // active player has 2+ simultaneous triggers awaiting their ordering
+    // choice), surface that prompt instead of overwriting it with Priority.
+    if matches!(state.waiting_for, WaitingFor::OrderTriggers { .. }) {
+        return Ok(state.waiting_for.clone());
+    }
     if let Some(waiting_for) = begin_pending_trigger_target_selection(state)? {
         return Ok(waiting_for);
     }
@@ -482,6 +500,12 @@ fn next_blocker_or_finish_declaration(
         .map(|combat| std::mem::take(&mut combat.pending_blocker_declaration_events))
         .unwrap_or_default();
     triggers::process_triggers(state, &blocker_events);
+    // CR 603.3b (#531): if process_triggers paused on OrderTriggers (the
+    // active player has 2+ simultaneous triggers awaiting their ordering
+    // choice), surface that prompt instead of overwriting it with Priority.
+    if matches!(state.waiting_for, WaitingFor::OrderTriggers { .. }) {
+        return Ok(state.waiting_for.clone());
+    }
     if let Some(waiting_for) = begin_pending_trigger_target_selection(state)? {
         return Ok(waiting_for);
     }

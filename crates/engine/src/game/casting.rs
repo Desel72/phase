@@ -7,8 +7,8 @@ use crate::types::ability::{
 use crate::types::card::LayoutKind;
 use crate::types::events::GameEvent;
 use crate::types::game_state::{
-    CastingVariant, CastingVariantChoiceOption, ConvokeMode, GameState, PendingCast,
-    SneakPlacement, SpellCastRecord, StackEntry, StackEntryKind, WaitingFor,
+    CastPaymentMode, CastingVariant, CastingVariantChoiceOption, ConvokeMode, GameState,
+    PendingCast, SneakPlacement, SpellCastRecord, StackEntry, StackEntryKind, WaitingFor,
 };
 use crate::types::identifiers::{CardId, ObjectId};
 use crate::types::keywords::{FlashbackCost, Keyword, KeywordKind};
@@ -148,6 +148,7 @@ struct PreparedSpellCast {
     /// graveyard / exile). Threaded onto `PendingCast.origin_zone` so that
     /// CancelCast (CR 601.2i) can return the object to its origin zone.
     origin_zone: Zone,
+    payment_mode: CastPaymentMode,
 }
 
 pub(crate) fn combined_spell_ability_def(
@@ -2119,6 +2120,7 @@ fn prepare_spell_cast_with_variant_override_inner(
         casting_variant,
         cast_timing_permission,
         origin_zone,
+        payment_mode: CastPaymentMode::Auto,
     })
 }
 
@@ -2983,8 +2985,28 @@ pub fn handle_adventure_choice(
     state: &mut GameState,
     player: PlayerId,
     object_id: ObjectId,
+    card_id: CardId,
+    creature: bool,
+    events: &mut Vec<GameEvent>,
+) -> Result<WaitingFor, EngineError> {
+    handle_adventure_choice_with_payment_mode(
+        state,
+        player,
+        object_id,
+        card_id,
+        creature,
+        CastPaymentMode::Auto,
+        events,
+    )
+}
+
+pub fn handle_adventure_choice_with_payment_mode(
+    state: &mut GameState,
+    player: PlayerId,
+    object_id: ObjectId,
     _card_id: CardId,
     creature: bool,
+    payment_mode: CastPaymentMode,
     events: &mut Vec<GameEvent>,
 ) -> Result<WaitingFor, EngineError> {
     if creature {
@@ -2992,7 +3014,7 @@ pub fn handle_adventure_choice(
         // cast pipeline so vanilla creature faces (no spell ability), modal cards,
         // X costs, and other shared casting features all work uniformly. Mirrors
         // the Warp/Overload "cast normally" pattern.
-        return continue_cast_from_prepared(state, player, object_id, events);
+        return continue_cast_from_prepared(state, player, object_id, payment_mode, events);
     }
 
     let layout = state
@@ -3011,6 +3033,7 @@ pub fn handle_adventure_choice(
 
     let mut prepared = prepare_spell_cast(state, player, object_id)?;
     prepared.casting_variant = casting_variant;
+    prepared.payment_mode = payment_mode;
     continue_with_prepared(state, player, prepared, events)
 }
 
@@ -3024,8 +3047,28 @@ pub fn handle_warp_cost_choice(
     state: &mut GameState,
     player: PlayerId,
     object_id: ObjectId,
+    card_id: CardId,
+    decision: crate::types::actions::AlternativeCastDecision,
+    events: &mut Vec<GameEvent>,
+) -> Result<WaitingFor, EngineError> {
+    handle_warp_cost_choice_with_payment_mode(
+        state,
+        player,
+        object_id,
+        card_id,
+        decision,
+        CastPaymentMode::Auto,
+        events,
+    )
+}
+
+pub fn handle_warp_cost_choice_with_payment_mode(
+    state: &mut GameState,
+    player: PlayerId,
+    object_id: ObjectId,
     _card_id: CardId,
     decision: crate::types::actions::AlternativeCastDecision,
+    payment_mode: CastPaymentMode,
     events: &mut Vec<GameEvent>,
 ) -> Result<WaitingFor, EngineError> {
     use crate::types::actions::AlternativeCastDecision;
@@ -3050,7 +3093,7 @@ pub fn handle_warp_cost_choice(
             None
         };
 
-        let result = continue_cast_from_prepared(state, player, object_id, events);
+        let result = continue_cast_from_prepared(state, player, object_id, payment_mode, events);
 
         // Only restore if the object is still in Hand (cast didn't proceed to stack).
         // If cast succeeded, the keyword is on the printed card and will be present
@@ -3067,7 +3110,7 @@ pub fn handle_warp_cost_choice(
     }
 
     // Alternative (Warp): prepare_spell_cast naturally picks CastingVariant::Warp
-    continue_cast_from_prepared(state, player, object_id, events)
+    continue_cast_from_prepared(state, player, object_id, payment_mode, events)
 }
 
 /// CR 702.96a: Handle Overload cost choice and proceed with casting. For
@@ -3079,23 +3122,44 @@ pub fn handle_overload_cost_choice(
     state: &mut GameState,
     player: PlayerId,
     object_id: ObjectId,
+    card_id: CardId,
+    decision: crate::types::actions::AlternativeCastDecision,
+    events: &mut Vec<GameEvent>,
+) -> Result<WaitingFor, EngineError> {
+    handle_overload_cost_choice_with_payment_mode(
+        state,
+        player,
+        object_id,
+        card_id,
+        decision,
+        CastPaymentMode::Auto,
+        events,
+    )
+}
+
+pub fn handle_overload_cost_choice_with_payment_mode(
+    state: &mut GameState,
+    player: PlayerId,
+    object_id: ObjectId,
     _card_id: CardId,
     decision: crate::types::actions::AlternativeCastDecision,
+    payment_mode: CastPaymentMode,
     events: &mut Vec<GameEvent>,
 ) -> Result<WaitingFor, EngineError> {
     use crate::types::actions::AlternativeCastDecision;
     match decision {
         AlternativeCastDecision::Alternative => {
-            let prepared = prepare_spell_cast_with_variant_override(
+            let mut prepared = prepare_spell_cast_with_variant_override(
                 state,
                 player,
                 object_id,
                 Some(CastingVariant::Overload),
             )?;
+            prepared.payment_mode = payment_mode;
             continue_with_prepared(state, player, prepared, events)
         }
         AlternativeCastDecision::Normal => {
-            continue_cast_from_prepared(state, player, object_id, events)
+            continue_cast_from_prepared(state, player, object_id, payment_mode, events)
         }
     }
 }
@@ -3212,8 +3276,28 @@ pub fn handle_bestow_cost_choice(
     state: &mut GameState,
     player: PlayerId,
     object_id: ObjectId,
+    card_id: CardId,
+    decision: crate::types::actions::AlternativeCastDecision,
+    events: &mut Vec<GameEvent>,
+) -> Result<WaitingFor, EngineError> {
+    handle_bestow_cost_choice_with_payment_mode(
+        state,
+        player,
+        object_id,
+        card_id,
+        decision,
+        CastPaymentMode::Auto,
+        events,
+    )
+}
+
+pub fn handle_bestow_cost_choice_with_payment_mode(
+    state: &mut GameState,
+    player: PlayerId,
+    object_id: ObjectId,
     _card_id: CardId,
     decision: crate::types::actions::AlternativeCastDecision,
+    payment_mode: CastPaymentMode,
     events: &mut Vec<GameEvent>,
 ) -> Result<WaitingFor, EngineError> {
     use crate::types::actions::AlternativeCastDecision;
@@ -3236,7 +3320,7 @@ pub fn handle_bestow_cost_choice(
         if let Some(obj) = state.objects.get_mut(&object_id) {
             apply_bestow_aura_form(obj);
         }
-        let prepared = match prepare_spell_cast_with_variant_override(
+        let mut prepared = match prepare_spell_cast_with_variant_override(
             state,
             player,
             object_id,
@@ -3251,9 +3335,10 @@ pub fn handle_bestow_cost_choice(
                 return Err(e);
             }
         };
+        prepared.payment_mode = payment_mode;
         return continue_with_prepared(state, player, prepared, events);
     }
-    continue_cast_from_prepared(state, player, object_id, events)
+    continue_cast_from_prepared(state, player, object_id, payment_mode, events)
 }
 
 /// CR 702.74a: Handle Evoke cost choice and proceed with casting. On
@@ -3265,8 +3350,28 @@ pub fn handle_evoke_cost_choice(
     state: &mut GameState,
     player: PlayerId,
     object_id: ObjectId,
+    card_id: CardId,
+    decision: crate::types::actions::AlternativeCastDecision,
+    events: &mut Vec<GameEvent>,
+) -> Result<WaitingFor, EngineError> {
+    handle_evoke_cost_choice_with_payment_mode(
+        state,
+        player,
+        object_id,
+        card_id,
+        decision,
+        CastPaymentMode::Auto,
+        events,
+    )
+}
+
+pub fn handle_evoke_cost_choice_with_payment_mode(
+    state: &mut GameState,
+    player: PlayerId,
+    object_id: ObjectId,
     _card_id: CardId,
     decision: crate::types::actions::AlternativeCastDecision,
+    payment_mode: CastPaymentMode,
     events: &mut Vec<GameEvent>,
 ) -> Result<WaitingFor, EngineError> {
     use crate::types::actions::AlternativeCastDecision;
@@ -3278,15 +3383,16 @@ pub fn handle_evoke_cost_choice(
         AlternativeCastDecision::Normal => false,
     };
     if alt_path {
-        let prepared = prepare_spell_cast_with_variant_override(
+        let mut prepared = prepare_spell_cast_with_variant_override(
             state,
             player,
             object_id,
             Some(CastingVariant::Evoke),
         )?;
+        prepared.payment_mode = payment_mode;
         return continue_with_prepared(state, player, prepared, events);
     }
-    continue_cast_from_prepared(state, player, object_id, events)
+    continue_cast_from_prepared(state, player, object_id, payment_mode, events)
 }
 
 /// Shared continuation: call prepare_spell_cast and run the standard casting
@@ -3296,9 +3402,11 @@ fn continue_cast_from_prepared(
     state: &mut GameState,
     player: PlayerId,
     object_id: ObjectId,
+    payment_mode: CastPaymentMode,
     events: &mut Vec<GameEvent>,
 ) -> Result<WaitingFor, EngineError> {
-    let prepared = prepare_spell_cast(state, player, object_id)?;
+    let mut prepared = prepare_spell_cast(state, player, object_id)?;
+    prepared.payment_mode = payment_mode;
     continue_with_prepared(state, player, prepared, events)
 }
 
@@ -3307,6 +3415,7 @@ fn continue_cast_with_variant(
     player: PlayerId,
     object_id: ObjectId,
     variant: CastingVariant,
+    payment_mode: CastPaymentMode,
     events: &mut Vec<GameEvent>,
 ) -> Result<WaitingFor, EngineError> {
     if let CastingVariant::GraveyardPermission {
@@ -3328,6 +3437,7 @@ fn continue_cast_with_variant(
                 object_id,
                 card_id,
                 source,
+                payment_mode,
                 available_slots: slots,
             });
         }
@@ -3337,7 +3447,7 @@ fn continue_cast_with_variant(
         if let Some(obj) = state.objects.get_mut(&object_id) {
             apply_bestow_aura_form(obj);
         }
-        let prepared =
+        let mut prepared =
             match prepare_spell_cast_with_variant_override(state, player, object_id, Some(variant))
             {
                 Ok(prepared) => prepared,
@@ -3346,11 +3456,13 @@ fn continue_cast_with_variant(
                     return Err(err);
                 }
             };
+        prepared.payment_mode = payment_mode;
         return continue_with_prepared(state, player, prepared, events);
     }
 
-    let prepared =
+    let mut prepared =
         prepare_spell_cast_with_variant_override(state, player, object_id, Some(variant))?;
+    prepared.payment_mode = payment_mode;
     continue_with_prepared(state, player, prepared, events)
 }
 
@@ -3361,6 +3473,29 @@ pub fn handle_casting_variant_choice(
     card_id: CardId,
     options: &[CastingVariantChoiceOption],
     index: usize,
+    events: &mut Vec<GameEvent>,
+) -> Result<WaitingFor, EngineError> {
+    handle_casting_variant_choice_with_payment_mode(
+        state,
+        player,
+        object_id,
+        card_id,
+        options,
+        index,
+        CastPaymentMode::Auto,
+        events,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn handle_casting_variant_choice_with_payment_mode(
+    state: &mut GameState,
+    player: PlayerId,
+    object_id: ObjectId,
+    card_id: CardId,
+    options: &[CastingVariantChoiceOption],
+    index: usize,
+    payment_mode: CastPaymentMode,
     events: &mut Vec<GameEvent>,
 ) -> Result<WaitingFor, EngineError> {
     let obj = state
@@ -3384,7 +3519,14 @@ pub fn handle_casting_variant_choice(
             "Chosen cast variant is no longer legal".to_string(),
         ));
     }
-    continue_cast_with_variant(state, player, object_id, option.variant, events)
+    continue_cast_with_variant(
+        state,
+        player,
+        object_id,
+        option.variant,
+        payment_mode,
+        events,
+    )
 }
 
 /// CR 702.190a + b: Cast a spell from HAND via the Sneak alternative cost.
@@ -3417,6 +3559,26 @@ pub fn handle_cast_spell_as_sneak(
     hand_object: ObjectId,
     card_id: CardId,
     creature_to_return: ObjectId,
+    events: &mut Vec<GameEvent>,
+) -> Result<WaitingFor, EngineError> {
+    handle_cast_spell_as_sneak_with_payment_mode(
+        state,
+        player,
+        hand_object,
+        card_id,
+        creature_to_return,
+        CastPaymentMode::Auto,
+        events,
+    )
+}
+
+pub fn handle_cast_spell_as_sneak_with_payment_mode(
+    state: &mut GameState,
+    player: PlayerId,
+    hand_object: ObjectId,
+    card_id: CardId,
+    creature_to_return: ObjectId,
+    payment_mode: CastPaymentMode,
     events: &mut Vec<GameEvent>,
 ) -> Result<WaitingFor, EngineError> {
     // Sanity: object exists, matches card_id, and is in the caster's hand.
@@ -3497,8 +3659,9 @@ pub fn handle_cast_spell_as_sneak(
         placement,
     };
 
-    let prepared =
+    let mut prepared =
         prepare_spell_cast_with_variant_override(state, player, hand_object, Some(variant))?;
+    prepared.payment_mode = payment_mode;
     continue_with_prepared(state, player, prepared, events)
 }
 
@@ -3514,6 +3677,26 @@ pub fn handle_cast_spell_as_web_slinging(
     hand_object: ObjectId,
     card_id: CardId,
     creature_to_return: ObjectId,
+    events: &mut Vec<GameEvent>,
+) -> Result<WaitingFor, EngineError> {
+    handle_cast_spell_as_web_slinging_with_payment_mode(
+        state,
+        player,
+        hand_object,
+        card_id,
+        creature_to_return,
+        CastPaymentMode::Auto,
+        events,
+    )
+}
+
+pub fn handle_cast_spell_as_web_slinging_with_payment_mode(
+    state: &mut GameState,
+    player: PlayerId,
+    hand_object: ObjectId,
+    card_id: CardId,
+    creature_to_return: ObjectId,
+    payment_mode: CastPaymentMode,
     events: &mut Vec<GameEvent>,
 ) -> Result<WaitingFor, EngineError> {
     let obj = state.objects.get(&hand_object).ok_or_else(|| {
@@ -3556,8 +3739,9 @@ pub fn handle_cast_spell_as_web_slinging(
     let variant = CastingVariant::WebSlinging {
         returned_creature: creature_to_return,
     };
-    let prepared =
+    let mut prepared =
         prepare_spell_cast_with_variant_override(state, player, hand_object, Some(variant))?;
+    prepared.payment_mode = payment_mode;
     continue_with_prepared(state, player, prepared, events)
 }
 
@@ -3578,12 +3762,13 @@ pub fn can_cast_spell_as_web_slinging_now(
     };
     let mut simulated = state.clone();
     let mut events = Vec::new();
-    handle_cast_spell_as_web_slinging(
+    handle_cast_spell_as_web_slinging_with_payment_mode(
         &mut simulated,
         player,
         hand_object,
         card_id,
         creature_to_return,
+        CastPaymentMode::Auto,
         &mut events,
     )
     .is_ok()
@@ -3612,6 +3797,26 @@ pub fn handle_cast_spell_for_free(
     object_id: ObjectId,
     card_id: CardId,
     source_id: ObjectId,
+    events: &mut Vec<GameEvent>,
+) -> Result<WaitingFor, EngineError> {
+    handle_cast_spell_for_free_with_payment_mode(
+        state,
+        player,
+        object_id,
+        card_id,
+        source_id,
+        CastPaymentMode::Auto,
+        events,
+    )
+}
+
+pub fn handle_cast_spell_for_free_with_payment_mode(
+    state: &mut GameState,
+    player: PlayerId,
+    object_id: ObjectId,
+    card_id: CardId,
+    source_id: ObjectId,
+    payment_mode: CastPaymentMode,
     events: &mut Vec<GameEvent>,
 ) -> Result<WaitingFor, EngineError> {
     let obj = state
@@ -3647,8 +3852,9 @@ pub fn handle_cast_spell_for_free(
         source: source_id,
         frequency,
     };
-    let prepared =
+    let mut prepared =
         prepare_spell_cast_with_variant_override(state, player, object_id, Some(variant))?;
+    prepared.payment_mode = payment_mode;
     continue_with_prepared(state, player, prepared, events)
 }
 
@@ -3667,6 +3873,24 @@ pub fn handle_cast_spell_as_miracle(
     player: PlayerId,
     object_id: ObjectId,
     card_id: CardId,
+    events: &mut Vec<GameEvent>,
+) -> Result<WaitingFor, EngineError> {
+    handle_cast_spell_as_miracle_with_payment_mode(
+        state,
+        player,
+        object_id,
+        card_id,
+        CastPaymentMode::Auto,
+        events,
+    )
+}
+
+pub fn handle_cast_spell_as_miracle_with_payment_mode(
+    state: &mut GameState,
+    player: PlayerId,
+    object_id: ObjectId,
+    card_id: CardId,
+    payment_mode: CastPaymentMode,
     events: &mut Vec<GameEvent>,
 ) -> Result<WaitingFor, EngineError> {
     let obj = state
@@ -3695,12 +3919,13 @@ pub fn handle_cast_spell_as_miracle(
             "Card no longer has miracle".to_string(),
         ));
     }
-    let prepared = prepare_spell_cast_with_variant_override(
+    let mut prepared = prepare_spell_cast_with_variant_override(
         state,
         player,
         object_id,
         Some(CastingVariant::Miracle),
     )?;
+    prepared.payment_mode = payment_mode;
     continue_with_prepared(state, player, prepared, events)
 }
 
@@ -3711,6 +3936,24 @@ pub fn handle_cast_spell_as_madness(
     player: PlayerId,
     object_id: ObjectId,
     card_id: CardId,
+    events: &mut Vec<GameEvent>,
+) -> Result<WaitingFor, EngineError> {
+    handle_cast_spell_as_madness_with_payment_mode(
+        state,
+        player,
+        object_id,
+        card_id,
+        CastPaymentMode::Auto,
+        events,
+    )
+}
+
+pub fn handle_cast_spell_as_madness_with_payment_mode(
+    state: &mut GameState,
+    player: PlayerId,
+    object_id: ObjectId,
+    card_id: CardId,
+    payment_mode: CastPaymentMode,
     events: &mut Vec<GameEvent>,
 ) -> Result<WaitingFor, EngineError> {
     let obj = state
@@ -3736,12 +3979,13 @@ pub fn handle_cast_spell_as_madness(
             "Card no longer has madness".to_string(),
         ));
     }
-    let prepared = prepare_spell_cast_with_variant_override(
+    let mut prepared = prepare_spell_cast_with_variant_override(
         state,
         player,
         object_id,
         Some(CastingVariant::Madness),
     )?;
+    prepared.payment_mode = payment_mode;
     continue_with_prepared(state, player, prepared, events)
 }
 
@@ -3751,6 +3995,24 @@ pub fn handle_cast_spell(
     player: PlayerId,
     object_id: ObjectId,
     card_id: CardId,
+    events: &mut Vec<GameEvent>,
+) -> Result<WaitingFor, EngineError> {
+    handle_cast_spell_with_payment_mode(
+        state,
+        player,
+        object_id,
+        card_id,
+        CastPaymentMode::Auto,
+        events,
+    )
+}
+
+pub fn handle_cast_spell_with_payment_mode(
+    state: &mut GameState,
+    player: PlayerId,
+    object_id: ObjectId,
+    card_id: CardId,
+    payment_mode: CastPaymentMode,
     events: &mut Vec<GameEvent>,
 ) -> Result<WaitingFor, EngineError> {
     // CR 601.2a: Validate object identity and zone eligibility. The
@@ -3798,6 +4060,7 @@ pub fn handle_cast_spell(
                 player,
                 object_id,
                 card_id,
+                payment_mode,
             });
         }
     }
@@ -3808,12 +4071,20 @@ pub fn handle_cast_spell(
             player,
             object_id,
             card_id,
+            payment_mode,
             options: variant_choices.options,
         });
     }
     if variant_choices.had_multiple_candidates {
         if let Some(option) = variant_choices.options.first() {
-            return continue_cast_with_variant(state, player, object_id, option.variant, events);
+            return continue_cast_with_variant(
+                state,
+                player,
+                object_id,
+                option.variant,
+                payment_mode,
+                events,
+            );
         }
     }
 
@@ -3843,6 +4114,7 @@ pub fn handle_cast_spell(
                         player,
                         object_id,
                         card_id,
+                        payment_mode,
                         keyword: crate::types::game_state::AlternativeCastKeyword::Warp,
                         normal_cost,
                         alternative_cost: warp_cost_eff,
@@ -3853,12 +4125,13 @@ pub fn handle_cast_spell(
                 // We handle this in handle_warp_cost_choice's override logic.
                 if normal_affordable && !warp_affordable {
                     // Force normal cast by proceeding through handle_warp_cost_choice
-                    return handle_warp_cost_choice(
+                    return handle_warp_cost_choice_with_payment_mode(
                         state,
                         player,
                         object_id,
                         card_id,
                         crate::types::actions::AlternativeCastDecision::Normal,
+                        payment_mode,
                         events,
                     );
                 }
@@ -3897,6 +4170,7 @@ pub fn handle_cast_spell(
                         player,
                         object_id,
                         card_id,
+                        payment_mode,
                         keyword: crate::types::game_state::AlternativeCastKeyword::Evoke,
                         normal_cost,
                         alternative_cost: evoke_cost_eff,
@@ -3904,12 +4178,13 @@ pub fn handle_cast_spell(
                 }
                 if !normal_affordable && evoke_affordable {
                     // Only evoke is payable — proceed via the evoke path.
-                    return handle_evoke_cost_choice(
+                    return handle_evoke_cost_choice_with_payment_mode(
                         state,
                         player,
                         object_id,
                         card_id,
                         crate::types::actions::AlternativeCastDecision::Alternative,
+                        payment_mode,
                         events,
                     );
                 }
@@ -3947,6 +4222,7 @@ pub fn handle_cast_spell(
                         player,
                         object_id,
                         card_id,
+                        payment_mode,
                         keyword: crate::types::game_state::AlternativeCastKeyword::Overload,
                         normal_cost,
                         alternative_cost: overload_cost_eff,
@@ -3954,12 +4230,13 @@ pub fn handle_cast_spell(
                 }
                 if !normal_affordable && overload_affordable {
                     // Only overload is payable — proceed via the overload path.
-                    return handle_overload_cost_choice(
+                    return handle_overload_cost_choice_with_payment_mode(
                         state,
                         player,
                         object_id,
                         card_id,
                         crate::types::actions::AlternativeCastDecision::Alternative,
+                        payment_mode,
                         events,
                     );
                 }
@@ -4012,6 +4289,7 @@ pub fn handle_cast_spell(
                         player,
                         object_id,
                         card_id,
+                        payment_mode,
                         keyword: crate::types::game_state::AlternativeCastKeyword::Bestow,
                         normal_cost,
                         alternative_cost: bestow_cost_eff,
@@ -4019,12 +4297,13 @@ pub fn handle_cast_spell(
                 }
                 if has_legal_creature_target && !normal_affordable && bestow_affordable {
                     // Only bestow is payable — proceed via the bestow path.
-                    return handle_bestow_cost_choice(
+                    return handle_bestow_cost_choice_with_payment_mode(
                         state,
                         player,
                         object_id,
                         card_id,
                         crate::types::actions::AlternativeCastDecision::Alternative,
+                        payment_mode,
                         events,
                     );
                 }
@@ -4049,6 +4328,7 @@ pub fn handle_cast_spell(
                         object_id,
                         card_id,
                         source: source.source_id,
+                        payment_mode,
                         available_slots: slots,
                     });
                 }
@@ -4056,7 +4336,7 @@ pub fn handle_cast_spell(
         }
     }
 
-    continue_cast_from_prepared(state, player, object_id, events)
+    continue_cast_from_prepared(state, player, object_id, payment_mode, events)
 }
 
 /// CR 110.4: Handle player's permanent type slot choice for a multi-type
@@ -4066,15 +4346,38 @@ pub fn handle_permanent_type_slot_choice(
     state: &mut GameState,
     player: PlayerId,
     object_id: ObjectId,
+    card_id: CardId,
+    source: ObjectId,
+    slot: crate::types::card_type::CoreType,
+    events: &mut Vec<GameEvent>,
+) -> Result<WaitingFor, EngineError> {
+    handle_permanent_type_slot_choice_with_payment_mode(
+        state,
+        player,
+        object_id,
+        card_id,
+        source,
+        slot,
+        CastPaymentMode::Auto,
+        events,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn handle_permanent_type_slot_choice_with_payment_mode(
+    state: &mut GameState,
+    player: PlayerId,
+    object_id: ObjectId,
     _card_id: CardId,
     source: ObjectId,
     slot: crate::types::card_type::CoreType,
+    payment_mode: CastPaymentMode,
     events: &mut Vec<GameEvent>,
 ) -> Result<WaitingFor, EngineError> {
     let graveyard_destination_replacement = graveyard_permission_source(state, player, object_id)
         .filter(|permission| permission.source_id == source)
         .and_then(|permission| permission.graveyard_destination_replacement);
-    let prepared = prepare_spell_cast_with_variant_override(
+    let mut prepared = prepare_spell_cast_with_variant_override(
         state,
         player,
         object_id,
@@ -4085,6 +4388,7 @@ pub fn handle_permanent_type_slot_choice(
             graveyard_destination_replacement,
         }),
     )?;
+    prepared.payment_mode = payment_mode;
     continue_with_prepared(state, player, prepared, events)
 }
 
@@ -4181,6 +4485,7 @@ fn continue_with_prepared(
                     modal_choice.clone(),
                     ability_def.distribute.clone(),
                     prepared.origin_zone,
+                    prepared.payment_mode,
                     events,
                 );
             }
@@ -4207,6 +4512,7 @@ fn continue_with_prepared(
             pending_modal.distribute = ability_def.distribute.clone();
             pending_modal.target_constraints = target_constraints;
             pending_modal.origin_zone = prepared.origin_zone;
+            pending_modal.payment_mode = prepared.payment_mode;
             // CR 700.2e: the mode-choice prompt is routed to the modal's
             // chooser (the controller for standard modals; the opponent for
             // "an opponent chooses —"). Target selection still belongs to the
@@ -4283,6 +4589,7 @@ fn continue_with_prepared(
                     prepared.casting_variant,
                     prepared.cast_timing_permission,
                     prepared.origin_zone,
+                    prepared.payment_mode,
                     events,
                 );
             } else {
@@ -4300,6 +4607,7 @@ fn continue_with_prepared(
                     .as_ref()
                     .and_then(|a| a.distribute.clone());
                 pending_aura.origin_zone = prepared.origin_zone;
+                pending_aura.payment_mode = prepared.payment_mode;
                 return Ok(WaitingFor::TargetSelection {
                     player,
                     pending_cast: Box::new(pending_aura),
@@ -4332,6 +4640,7 @@ fn continue_with_prepared(
                     .as_ref()
                     .and_then(|a| a.distribute.clone()),
                 prepared.origin_zone,
+                prepared.payment_mode,
                 events,
             );
         }
@@ -4357,6 +4666,7 @@ fn continue_with_prepared(
                     .as_ref()
                     .and_then(|a| a.distribute.clone()),
                 prepared.origin_zone,
+                prepared.payment_mode,
                 events,
             );
         }
@@ -4376,6 +4686,7 @@ fn continue_with_prepared(
                 prepared.casting_variant,
                 prepared.cast_timing_permission,
                 prepared.origin_zone,
+                prepared.payment_mode,
                 events,
             );
         }
@@ -4394,6 +4705,7 @@ fn continue_with_prepared(
             .as_ref()
             .and_then(|a| a.distribute.clone());
         pending_targets.origin_zone = prepared.origin_zone;
+        pending_targets.payment_mode = prepared.payment_mode;
         return Ok(WaitingFor::TargetSelection {
             player,
             pending_cast: Box::new(pending_targets),
@@ -4413,6 +4725,7 @@ fn continue_with_prepared(
         prepared.casting_variant,
         prepared.cast_timing_permission,
         prepared.origin_zone,
+        prepared.payment_mode,
         events,
     )
 }
@@ -4513,6 +4826,7 @@ fn continue_with_no_ability(
         prepared.casting_variant,
         prepared.cast_timing_permission,
         prepared.origin_zone,
+        prepared.payment_mode,
         events,
     )
 }
@@ -12206,6 +12520,90 @@ mod tests {
     }
 
     #[test]
+    fn activation_restriction_only_once_each_turn_resets_after_source_reenters() {
+        let mut state = setup_game_at_main_phase();
+        let source = create_object(
+            &mut state,
+            CardId(70),
+            PlayerId(0),
+            "Quirion Ranger".to_string(),
+            Zone::Battlefield,
+        );
+        let obj = state.objects.get_mut(&source).unwrap();
+        obj.card_types.core_types.push(CoreType::Creature);
+        Arc::make_mut(&mut obj.abilities).push(
+            AbilityDefinition::new(
+                AbilityKind::Activated,
+                Effect::Draw {
+                    count: QuantityExpr::Fixed { value: 1 },
+                    target: TargetFilter::Controller,
+                },
+            )
+            .activation_restrictions(vec![ActivationRestriction::OnlyOnceEachTurn]),
+        );
+
+        let mut events = Vec::new();
+        handle_activate_ability(&mut state, PlayerId(0), source, 0, &mut events).unwrap();
+        assert!(handle_activate_ability(&mut state, PlayerId(0), source, 0, &mut events).is_err());
+
+        zones::move_to_zone(&mut state, source, Zone::Hand, &mut events);
+        zones::move_to_zone(&mut state, source, Zone::Stack, &mut events);
+        zones::move_to_zone(&mut state, source, Zone::Battlefield, &mut events);
+
+        assert_eq!(
+            state
+                .activated_abilities_this_turn
+                .get(&(source, 0))
+                .copied(),
+            None
+        );
+        handle_activate_ability(&mut state, PlayerId(0), source, 0, &mut events)
+            .expect("re-entered permanent is a new object for activation limits");
+    }
+
+    #[test]
+    fn activation_restriction_only_once_resets_after_source_reenters() {
+        let mut state = setup_game_at_main_phase();
+        let source = create_object(
+            &mut state,
+            CardId(73),
+            PlayerId(0),
+            "Adrenaline Jockey".to_string(),
+            Zone::Battlefield,
+        );
+        let obj = state.objects.get_mut(&source).unwrap();
+        obj.card_types.core_types.push(CoreType::Creature);
+        Arc::make_mut(&mut obj.abilities).push(
+            AbilityDefinition::new(
+                AbilityKind::Activated,
+                Effect::Draw {
+                    count: QuantityExpr::Fixed { value: 1 },
+                    target: TargetFilter::Controller,
+                },
+            )
+            .activation_restrictions(vec![ActivationRestriction::OnlyOnce]),
+        );
+
+        let mut events = Vec::new();
+        handle_activate_ability(&mut state, PlayerId(0), source, 0, &mut events).unwrap();
+        assert!(handle_activate_ability(&mut state, PlayerId(0), source, 0, &mut events).is_err());
+
+        zones::move_to_zone(&mut state, source, Zone::Hand, &mut events);
+        zones::move_to_zone(&mut state, source, Zone::Stack, &mut events);
+        zones::move_to_zone(&mut state, source, Zone::Battlefield, &mut events);
+
+        assert_eq!(
+            state
+                .activated_abilities_this_game
+                .get(&(source, 0))
+                .copied(),
+            None
+        );
+        handle_activate_ability(&mut state, PlayerId(0), source, 0, &mut events)
+            .expect("re-entered permanent is a new object for activation limits");
+    }
+
+    #[test]
     fn exhaust_ability_only_once_is_enforced_and_emits_event() {
         let mut state = setup_game_at_main_phase();
         let source = create_object(
@@ -13733,6 +14131,7 @@ mod tests {
             None,
             None,
             Zone::Hand,
+            CastPaymentMode::Auto,
             &mut events,
         )
         .expect("spell with chained targets should cast");
@@ -22034,6 +22433,7 @@ mod tests {
                 shards: vec![ManaCostShard::Green],
                 generic: 3,
             },
+            payment_mode: CastPaymentMode::Auto,
         };
         let cands = candidate_actions_broad(&state);
         let mut saw_yes = false;

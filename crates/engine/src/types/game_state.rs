@@ -693,6 +693,17 @@ pub struct DelayedTrigger {
     pub one_shot: bool,
 }
 
+/// CR 601.2g-h: Whether the engine may auto-pay an unambiguous spell mana cost
+/// or must pause after announcement so the player can activate mana abilities
+/// manually before committing payment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum CastPaymentMode {
+    #[default]
+    Auto,
+    Manual,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PendingCast {
     pub object_id: ObjectId,
@@ -757,6 +768,8 @@ pub struct PendingCast {
     /// quantities can resolve later.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub convoked_creatures: Vec<ObjectId>,
+    #[serde(default)]
+    pub payment_mode: CastPaymentMode,
 }
 
 fn default_origin_zone() -> Zone {
@@ -789,7 +802,13 @@ impl PendingCast {
             declared_kickers_to_pay: Vec::new(),
             declined_kickers: Vec::new(),
             convoked_creatures: Vec::new(),
+            payment_mode: CastPaymentMode::Auto,
         }
+    }
+
+    pub fn with_payment_mode(mut self, payment_mode: CastPaymentMode) -> Self {
+        self.payment_mode = payment_mode;
+        self
     }
 }
 
@@ -1103,6 +1122,39 @@ pub struct MulliganBottomEntry {
     pub count: u8,
 }
 
+/// CR 603.3b: Display payload for one collected-but-not-yet-stacked trigger
+/// awaiting its controller's ordering choice. Engine-derived so the filtered
+/// state snapshot (multiplayer) and the frontend overlay never re-derive
+/// trigger source/description from `state.objects`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingTriggerSummary {
+    pub source_id: ObjectId,
+    pub source_name: String,
+    pub description: String,
+}
+
+/// CR 603.3b: One controller's group within an in-flight trigger ordering
+/// pass. `ordered = true` once the controller has submitted their permutation
+/// (or once the group is single-trigger and trivially in final order, or once
+/// the controller has been eliminated per CR 800.4a).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TriggerOrderGroup {
+    pub controller: PlayerId,
+    pub triggers: Vec<crate::game::triggers::PendingTriggerContext>,
+    pub ordered: bool,
+}
+
+/// CR 603.3b: Engine-internal scheduling state for the per-controller ordering
+/// pass. `groups` are kept in **placement order** (NAP-group first → AP-group
+/// last) — the order they will be concatenated into the dispatch queue once
+/// every group is `ordered`. Controllers are *prompted* in choice order
+/// (AP-first per CR 101.4), but each chosen permutation is applied only within
+/// that controller's fixed placement slot.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingTriggerOrder {
+    pub groups: Vec<TriggerOrderGroup>,
+}
+
 /// CR 101.4 + CR 608.2 (Battlebond friend-or-foe keyword action — no explicit
 /// CR section): The "who acts" semantic for a `WaitingFor::VoteChoice` step.
 ///
@@ -1266,6 +1318,17 @@ pub enum WaitingFor {
         candidate_count: usize,
         #[serde(default)]
         candidate_descriptions: Vec<String>,
+    },
+    /// CR 603.3b: When a player controls 2+ triggered abilities placed on the
+    /// stack in the same pass, that player chooses the order. The variant is
+    /// emitted in **choice order** (APNAP per CR 101.4 — active player chooses
+    /// first), one player at a time. Only when the prompted group has
+    /// `triggers.len() >= 2`; single-trigger groups never prompt. The chosen
+    /// permutation is applied within the controller's fixed placement slot;
+    /// placement order across controllers stays NAP-first (CR 405.3 + 603.3b).
+    OrderTriggers {
+        player: PlayerId,
+        triggers: Vec<PendingTriggerSummary>,
     },
     /// CR 707.9: Player chooses a permanent to copy as part of an "enter as a copy of"
     /// replacement effect. This is a choice, not targeting (hexproof/shroud don't apply).
@@ -1595,6 +1658,8 @@ pub enum WaitingFor {
         player: PlayerId,
         object_id: ObjectId,
         card_id: CardId,
+        #[serde(default)]
+        payment_mode: CastPaymentMode,
     },
     /// CR 712.12: Player chooses which face of an MDFC to play as a land
     /// when both faces have the Land type.
@@ -1623,6 +1688,8 @@ pub enum WaitingFor {
         player: PlayerId,
         object_id: ObjectId,
         card_id: CardId,
+        #[serde(default)]
+        payment_mode: CastPaymentMode,
         /// Which keyword granted the alternative cost — drives post-payment
         /// dispatch and the modal copy. Exhaustively matched everywhere so a
         /// future keyword addition (e.g., Madness, Spectacle) is a compile
@@ -1640,6 +1707,8 @@ pub enum WaitingFor {
         player: PlayerId,
         object_id: ObjectId,
         card_id: CardId,
+        #[serde(default)]
+        payment_mode: CastPaymentMode,
         options: Vec<CastingVariantChoiceOption>,
     },
     /// CR 110.4: Player chooses which permanent type slot to consume when
@@ -1651,6 +1720,8 @@ pub enum WaitingFor {
         object_id: ObjectId,
         card_id: CardId,
         source: ObjectId,
+        #[serde(default)]
+        payment_mode: CastPaymentMode,
         available_slots: Vec<super::card_type::CoreType>,
     },
     /// CR 601.2c: Player chooses any number of legal targets from a set.
@@ -2432,6 +2503,7 @@ impl WaitingFor {
             | WaitingFor::DeclareBlockers { player, .. }
             | WaitingFor::UntapChoice { player, .. }
             | WaitingFor::ReplacementChoice { player, .. }
+            | WaitingFor::OrderTriggers { player, .. }
             | WaitingFor::CopyTargetChoice { player, .. }
             | WaitingFor::ExploreChoice { player, .. }
             | WaitingFor::EquipTarget { player, .. }
@@ -3124,6 +3196,14 @@ pub struct GameState {
     /// `pending_trigger` is pushed to the stack.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub deferred_triggers: Vec<crate::game::triggers::DeferredTrigger>,
+
+    /// CR 603.3b: In-flight per-controller ordering pass. `Some` only while a
+    /// `WaitingFor::OrderTriggers` choice (or its APNAP successor) is
+    /// outstanding. Holds every group's triggers in placement order (NAP-first)
+    /// plus the per-group `ordered` flag. When every group is `ordered`,
+    /// `handle_order_triggers` concatenates and dispatches.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_trigger_order: Option<PendingTriggerOrder>,
 
     // CR 607.2a + CR 406.5: Exile tracking for "until leaves" linked abilities.
     #[serde(default)]
@@ -3951,6 +4031,7 @@ impl GameState {
             pending_trigger: None,
             pending_trigger_event_batch: Vec::new(),
             deferred_triggers: Vec::new(),
+            pending_trigger_order: None,
             exile_links: Vec::new(),
             paradigm_primed: Vec::new(),
             delayed_triggers: Vec::new(),
@@ -4218,6 +4299,7 @@ impl PartialEq for GameState {
             && self.spells_cast_last_turn == other.spells_cast_last_turn
             && self.pending_trigger == other.pending_trigger
             && self.deferred_triggers == other.deferred_triggers
+            && self.pending_trigger_order == other.pending_trigger_order
             && self.exile_links == other.exile_links
             && self.paradigm_primed == other.paradigm_primed
             && self.delayed_triggers == other.delayed_triggers
@@ -4445,6 +4527,7 @@ mod tests {
                 declared_kickers_to_pay: Vec::new(),
                 declined_kickers: Vec::new(),
                 convoked_creatures: Vec::new(),
+                payment_mode: CastPaymentMode::Auto,
             })
         }
 
@@ -4726,6 +4809,7 @@ mod tests {
             declared_kickers_to_pay: Vec::new(),
             declined_kickers: Vec::new(),
             convoked_creatures: Vec::new(),
+            payment_mode: CastPaymentMode::Auto,
         });
         let choose_x = WaitingFor::ChooseXValue {
             player: PlayerId(0),

@@ -9,6 +9,7 @@ use crate::types::game_state::{GameState, WaitingFor};
 use crate::types::identifiers::ObjectId;
 use crate::types::player::PlayerId;
 use crate::types::proposed_event::ProposedEvent;
+use crate::types::replacements::ReplacementEvent;
 use crate::types::zones::Zone;
 
 use super::ability_utils::build_resolved_from_def_with_targets;
@@ -163,9 +164,13 @@ pub(super) fn handle_replacement_choice(
                         events.push(GameEvent::PermanentUntapped { object_id });
                     }
                 }
-                // CR 121.1: Draw accepted after replacement choice — delegate to the
-                // shared post-replacement helper so library-zone move + per-turn
-                // accounting match the non-choice delivery.
+                // CR 121.1 + CR 614.6 + CR 614.11: Draw accepted after
+                // replacement choice — delegate to the shared post-replacement
+                // helper so library-zone move + per-turn accounting match the
+                // non-choice delivery. For Abundance-shape replacements
+                // (`execute` is a non-Draw chain), `draw_applier` has zeroed
+                // the count and the central `post_replacement_continuation`
+                // drain below runs the chain (Choose → RevealUntil).
                 draw @ ProposedEvent::Draw { .. } => {
                     apply_draw_after_replacement(state, draw, events);
                 }
@@ -308,15 +313,25 @@ pub(super) fn handle_replacement_choice(
             }
 
             if state.post_replacement_continuation.is_some() {
-                // The ETB-replacement post-effect resolves against the
-                // zone-changing object, not the replacement source — drop the
-                // source slot so it doesn't leak into an unrelated later
-                // replacement.
-                state.post_replacement_source = None;
+                // CR 614.12a + CR 614.1c: For ZoneChange events the post-effect
+                // resolves against the zone-changing object, not the replacement
+                // source — drop the source slot so it doesn't leak into an
+                // unrelated later replacement. For non-ZoneChange events
+                // (Draw/Damage/Mill/etc.) there is no enterer, so the source
+                // slot is the only handle on the replacement's host (e.g.,
+                // Abundance for "you may instead choose ... reveal cards" —
+                // CR 614.6 + CR 614.11). Preserve it in that case so
+                // `apply_post_replacement_effect` resolves the chain against
+                // Abundance's controller, not `ObjectId(0)` / active_player.
+                let is_zone_change = zone_change_object_id.is_some();
+                if is_zone_change {
+                    state.post_replacement_source = None;
+                }
                 if let Some(next_waiting_for) = apply_pending_post_replacement_effect(
                     state,
                     zone_change_object_id,
                     replacement_ctx.as_ref(),
+                    Some(ReplacementEvent::Moved),
                     events,
                 ) {
                     waiting_for = next_waiting_for;
@@ -480,6 +495,13 @@ pub(super) fn handle_copy_target_choice(
     if matches!(state.waiting_for, WaitingFor::DistributeAmong { .. }) {
         return Ok(state.waiting_for.clone());
     }
+    // CR 603.3b (#531): propagate OrderTriggers pause from process_triggers
+    // above. Without this, a doubled replayed ETB trigger (e.g., Wedding
+    // Announcement's token + Ocelot Pride's life-gain rider both firing on the
+    // copy entry) would silently fall through to Priority.
+    if matches!(state.waiting_for, WaitingFor::OrderTriggers { .. }) {
+        return Ok(state.waiting_for.clone());
+    }
     if let Some(waiting_for) = super::engine::begin_pending_trigger_target_selection(state)? {
         return Ok(waiting_for);
     }
@@ -515,6 +537,7 @@ pub(super) fn apply_post_replacement_effect(
     effect_def: &AbilityDefinition,
     object_id: Option<ObjectId>,
     spell_resolution: Option<&crate::types::game_state::PendingSpellResolution>,
+    event: Option<&ReplacementEvent>,
     events: &mut Vec<GameEvent>,
 ) -> Option<WaitingFor> {
     let (source_id, controller) = object_id
@@ -559,13 +582,21 @@ pub(super) fn apply_post_replacement_effect(
     // injection in that case so `sacrifice.rs::resolve` falls through to its
     // chooser-driven `EffectZoneChoice` branch instead of treating the source as
     // a pre-selected sacrifice target.
-    let sacrifice_typed_scope = matches!(
-        &*real_work.effect,
-        Effect::Sacrifice {
-            target: TargetFilter::Typed(_) | TargetFilter::Any,
-            ..
-        }
-    );
+    //
+    // Gated on `event == ReplacementEvent::Moved` so the suppression scopes to
+    // ETB-style replacements (the Devour shape). Non-ETB events that carry
+    // `Sacrifice { Typed }` post-effects — Dralnu, Lich Lord (DealtDamage:
+    // "sacrifice that many permanents") and Outfitted Jouster (DamageDone:
+    // "sacrifice an Equipment") — keep the pre-Devour injection path so their
+    // target-as-pre-selected resolution is unchanged.
+    let sacrifice_typed_scope = matches!(event, Some(ReplacementEvent::Moved))
+        && matches!(
+            &*real_work.effect,
+            Effect::Sacrifice {
+                target: TargetFilter::Typed(_) | TargetFilter::Any,
+                ..
+            }
+        );
     let targets = if sacrifice_typed_scope {
         Vec::new()
     } else {
@@ -587,9 +618,17 @@ pub(super) fn apply_pending_post_replacement_effect(
     state: &mut GameState,
     object_id: Option<ObjectId>,
     spell_resolution: Option<&crate::types::game_state::PendingSpellResolution>,
+    event: Option<ReplacementEvent>,
     events: &mut Vec<GameEvent>,
 ) -> Option<WaitingFor> {
     let source = state.post_replacement_source.take().or(object_id);
+    // CR 614.12a (approximation): sacrifice prompt fires after ZoneChange completes,
+    // matching Siege/Tribute precedent. A strict reading of 614.12a says the choice
+    // is made *before* the permanent enters, but the engine's pipeline applies the
+    // zone change first and then drains the post-replacement continuation; the
+    // observable behavior is equivalent for as-enters sacrifice/counter mechanics
+    // (Devour, Siege protector, Tribute) where the choice doesn't gate entry.
+    //
     // CR 614.12a + CR 615.5: Single dispatch on the unified continuation slot.
     // `Resolved` carries captured targets (prevention follow-ups); `Template`
     // is an AST that resolves against `source` for ETB / Optional accept.
@@ -597,9 +636,14 @@ pub(super) fn apply_pending_post_replacement_effect(
         Some(PostReplacementContinuation::Resolved(resolved)) => {
             apply_post_replacement_resolved_effect(state, &resolved, events)
         }
-        Some(PostReplacementContinuation::Template(effect_def)) => {
-            apply_post_replacement_effect(state, &effect_def, source, spell_resolution, events)
-        }
+        Some(PostReplacementContinuation::Template(effect_def)) => apply_post_replacement_effect(
+            state,
+            &effect_def,
+            source,
+            spell_resolution,
+            event.as_ref(),
+            events,
+        ),
         None => None,
     };
     state.post_replacement_event_source = None;
@@ -1377,8 +1421,13 @@ mod tests {
             Some(PostReplacementContinuation::Template(Box::new(template)));
 
         let mut events = Vec::new();
-        let waiting =
-            apply_pending_post_replacement_effect(&mut state, Some(source), None, &mut events);
+        let waiting = apply_pending_post_replacement_effect(
+            &mut state,
+            Some(source),
+            None,
+            None,
+            &mut events,
+        );
 
         // Resolved cleanly — no follow-up WaitingFor and slot drained.
         assert!(waiting.is_none(), "Template path resolved without prompt");
@@ -1419,8 +1468,13 @@ mod tests {
             Some(PostReplacementContinuation::Resolved(Box::new(resolved)));
 
         let mut events = Vec::new();
-        let waiting =
-            apply_pending_post_replacement_effect(&mut state, Some(source), None, &mut events);
+        let waiting = apply_pending_post_replacement_effect(
+            &mut state,
+            Some(source),
+            None,
+            None,
+            &mut events,
+        );
 
         assert!(waiting.is_none(), "Resolved path resolved without prompt");
         assert!(state.post_replacement_continuation.is_none());

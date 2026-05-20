@@ -1549,13 +1549,35 @@ pub fn process_triggers(state: &mut GameState, events: &[GameEvent]) {
         return;
     }
 
-    // CR 113.2c + CR 603.2 + CR 603.3b: Drive each collected trigger through
-    // its disposition (pushed to stack, resolved inline as a mana ability, or
-    // paused for player input). If `dispatch_pending_trigger_context` reports
-    // a pause, the remaining contexts are stashed into `deferred_triggers` so
-    // they reach the stack once the active `pending_trigger` is resolved by
-    // its dispatcher. Without this, every queued trigger after the first
-    // input-requiring one would be silently dropped (issue #416).
+    // CR 603.3b + CR 101.4: If any controller has 2+ triggers in this pass,
+    // each such controller must choose the order their group is placed.
+    // Collect every controller's order up front (issue #531) — the v1
+    // interleaved design silently skipped later groups when a dispatched
+    // trigger paused, because the post-pause `deferred_triggers` drain has
+    // no concept of remaining ordering choices.
+    match begin_trigger_ordering(state, pending) {
+        TriggerOrderingDisposition::PromptForChoice(wf) => {
+            state.waiting_for = *wf;
+            clear_post_collection_transients(state);
+        }
+        // No controller has 2+ triggers — dispatch immediately (zero behaviour
+        // change for the single-trigger common case). `collect_pending_triggers`
+        // already returned the vec in NAP-first stack-placement order.
+        TriggerOrderingDisposition::NoChoiceNeeded(pending) => {
+            dispatch_collected_triggers(state, pending);
+            clear_post_collection_transients(state);
+        }
+    }
+}
+
+/// CR 113.2c + CR 603.2 + CR 603.3b: Drive each collected trigger through
+/// its disposition (pushed to stack, resolved inline as a mana ability, or
+/// paused for player input). If `dispatch_pending_trigger_context` reports
+/// a pause, the remaining contexts are stashed into `deferred_triggers` so
+/// they reach the stack once the active `pending_trigger` is resolved by
+/// its dispatcher. Without this, every queued trigger after the first
+/// input-requiring one would be silently dropped (issue #416).
+fn dispatch_collected_triggers(state: &mut GameState, pending: Vec<PendingTriggerContext>) {
     let mut events_out = Vec::new();
     let mut iter = pending.into_iter();
     while let Some(trigger_context) = iter.next() {
@@ -1567,24 +1589,26 @@ pub fn process_triggers(state: &mut GameState, events: &[GameEvent]) {
             return;
         }
     }
+}
 
-    // Clear transient cast-tally booleans/color breakdown on all objects after
-    // trigger collection. `mana_spent_to_cast_amount` is intentionally NOT
-    // cleared: it is a historical fact about the object (how much mana was
-    // spent to cast it) used by spell resolution effects like "deals damage
-    // equal to the amount of mana spent to cast this spell" (Molten Note) and
-    // by CR 603.4 intervening-if resolution re-checks (Hungry Graffalon /
-    // Topiary Lecturer Increment).
-    //
-    // CR 603.4: `cast_from_zone` is likewise preserved for permanents on the
-    // battlefield — a `WasCast` / "if you cast it" ETB intervening-if is
-    // re-checked when the triggered ability *resolves* (`stack.rs`), not only
-    // when it is collected. Clearing it on all objects here would make every
-    // `WasCast`-conditioned ETB trigger (Wedding Ring's token-copy, Discover
-    // ETBs) silently do nothing at resolution. It is still cleared for
-    // non-battlefield objects (a fizzled stack spell, an object that bounced)
-    // since their cast provenance is no longer meaningful, and is cleared on
-    // battlefield exit by `reset_for_battlefield_exit`.
+/// Clear transient cast-tally booleans/color breakdown on all objects after
+/// trigger collection. `mana_spent_to_cast_amount` is intentionally NOT
+/// cleared: it is a historical fact about the object (how much mana was
+/// spent to cast it) used by spell resolution effects like "deals damage
+/// equal to the amount of mana spent to cast this spell" (Molten Note) and
+/// by CR 603.4 intervening-if resolution re-checks (Hungry Graffalon /
+/// Topiary Lecturer Increment).
+///
+/// CR 603.4: `cast_from_zone` is likewise preserved for permanents on the
+/// battlefield — a `WasCast` / "if you cast it" ETB intervening-if is
+/// re-checked when the triggered ability *resolves* (`stack.rs`), not only
+/// when it is collected. Clearing it on all objects here would make every
+/// `WasCast`-conditioned ETB trigger (Wedding Ring's token-copy, Discover
+/// ETBs) silently do nothing at resolution. It is still cleared for
+/// non-battlefield objects (a fizzled stack spell, an object that bounced)
+/// since their cast provenance is no longer meaningful, and is cleared on
+/// battlefield exit by `reset_for_battlefield_exit`.
+fn clear_post_collection_transients(state: &mut GameState) {
     for obj in state.objects.iter_mut().map(|(_, v)| v) {
         if obj.zone != Zone::Battlefield {
             obj.cast_from_zone = None;
@@ -1592,6 +1616,254 @@ pub fn process_triggers(state: &mut GameState, events: &[GameEvent]) {
         obj.mana_spent_to_cast = false;
         obj.colors_spent_to_cast = crate::types::mana::ColoredManaCount::default();
     }
+}
+
+/// CR 603.3b: Outcome of the per-controller ordering pass for a freshly
+/// collected pending-trigger set. `WaitingFor` is large (~432 bytes), so the
+/// prompt arm is boxed to keep the enum size proportional to the common case.
+enum TriggerOrderingDisposition {
+    /// At least one controller has 2+ triggers — `state.pending_trigger_order`
+    /// has been populated and the inner `WaitingFor::OrderTriggers` must be
+    /// set as `state.waiting_for`.
+    PromptForChoice(Box<crate::types::game_state::WaitingFor>),
+    /// Every controller has at most one trigger — no choice is needed; the
+    /// caller dispatches the original vec directly.
+    NoChoiceNeeded(Vec<PendingTriggerContext>),
+}
+
+/// CR 603.3b: Partition `pending` by controller (preserving the NAP-first
+/// placement order produced by `collect_pending_triggers`), populate
+/// `state.pending_trigger_order` with one `TriggerOrderGroup` per controller,
+/// and return either the first ordering prompt (most-AP unordered group) or
+/// `NoChoiceNeeded` when no group requires a choice.
+///
+/// Choice order vs placement order — the two are intentionally distinct:
+///   * Placement order (which group sits lower on the stack) is APNAP per
+///     CR 405.3 + 603.3b — NAP-first — and is locked by the input vec.
+///   * Choice order (which controller is prompted first) is APNAP per
+///     CR 101.4 — active player chooses first — so we prompt the
+///     most-AP unordered group, walking backwards through `groups`.
+fn begin_trigger_ordering(
+    state: &mut GameState,
+    pending: Vec<PendingTriggerContext>,
+) -> TriggerOrderingDisposition {
+    use crate::types::game_state::{PendingTriggerOrder, TriggerOrderGroup};
+
+    // Partition by controller while preserving the input (placement) order.
+    let mut groups: Vec<TriggerOrderGroup> = Vec::new();
+    for ctx in pending {
+        let controller = ctx.pending.controller;
+        if let Some(last) = groups.last_mut() {
+            if last.controller == controller {
+                last.triggers.push(ctx);
+                continue;
+            }
+        }
+        groups.push(TriggerOrderGroup {
+            controller,
+            triggers: vec![ctx],
+            ordered: false,
+        });
+    }
+
+    // Single-trigger groups are trivially in final order.
+    for g in groups.iter_mut() {
+        if g.triggers.len() <= 1 {
+            g.ordered = true;
+        }
+    }
+
+    // Common case: every group has at most one trigger. No choice needed —
+    // return the concatenated vec for direct dispatch.
+    if groups.iter().all(|g| g.ordered) {
+        let pending: Vec<PendingTriggerContext> =
+            groups.into_iter().flat_map(|g| g.triggers).collect();
+        return TriggerOrderingDisposition::NoChoiceNeeded(pending);
+    }
+
+    state.pending_trigger_order = Some(PendingTriggerOrder { groups });
+    let wf = build_next_order_triggers_prompt(state)
+        .expect("just-populated pending_trigger_order must yield a prompt");
+    TriggerOrderingDisposition::PromptForChoice(Box::new(wf))
+}
+
+/// CR 603.3b: Public wrapper around `build_next_order_triggers_prompt` for
+/// cross-module use (e.g., `elimination::prune_pending_trigger_order`).
+pub(crate) fn build_next_order_triggers_prompt_public(
+    state: &GameState,
+) -> Option<crate::types::game_state::WaitingFor> {
+    build_next_order_triggers_prompt(state)
+}
+
+/// CR 603.3b: Test/legacy helper that drains every outstanding
+/// `WaitingFor::OrderTriggers` prompt by submitting the identity order (which
+/// is equivalent to the pre-issue-#531 deterministic placement). Used by
+/// existing tests that assert on stack contents without modeling the new
+/// per-controller ordering choice, and by callers (e.g., the engine's
+/// auto-advance path) that should preserve legacy behaviour for the
+/// stack-placement-only assertions. Returns the number of prompts drained.
+pub fn drain_order_triggers_with_identity(
+    state: &mut crate::types::game_state::GameState,
+) -> usize {
+    use crate::types::actions::GameAction;
+    use crate::types::game_state::WaitingFor;
+    let mut drained = 0;
+    while let WaitingFor::OrderTriggers { triggers, .. } = &state.waiting_for {
+        let order: Vec<usize> = (0..triggers.len()).collect();
+        super::engine::apply_as_current(state, GameAction::OrderTriggers { order })
+            .expect("identity OrderTriggers must succeed");
+        drained += 1;
+        if drained > 16 {
+            panic!("drain_order_triggers_with_identity: too many APNAP groups");
+        }
+    }
+    drained
+}
+
+/// CR 603.3b: Build the next `WaitingFor::OrderTriggers` prompt by finding
+/// the most-AP unordered group (walk groups in reverse — `groups` is NAP-first
+/// placement order, so reverse iteration is AP-first choice order).
+/// Returns `None` if every group is `ordered` (caller should dispatch).
+fn build_next_order_triggers_prompt(
+    state: &GameState,
+) -> Option<crate::types::game_state::WaitingFor> {
+    use crate::types::game_state::{PendingTriggerSummary, WaitingFor};
+
+    let order = state.pending_trigger_order.as_ref()?;
+    let group = order.groups.iter().rev().find(|g| !g.ordered)?;
+    let triggers: Vec<PendingTriggerSummary> = group
+        .triggers
+        .iter()
+        .map(|ctx| PendingTriggerSummary {
+            source_id: ctx.pending.source_id,
+            source_name: state
+                .objects
+                .get(&ctx.pending.source_id)
+                .map(|o| o.name.clone())
+                .unwrap_or_default(),
+            description: ctx.pending.description.clone().unwrap_or_default(),
+        })
+        .collect();
+    Some(WaitingFor::OrderTriggers {
+        player: group.controller,
+        triggers,
+    })
+}
+
+/// CR 603.3b: Validate `order` is a permutation of `0..len`. Returns true if
+/// `order` has the right length, no duplicates, and every index is in range.
+fn is_valid_permutation(order: &[usize], len: usize) -> bool {
+    if order.len() != len {
+        return false;
+    }
+    let mut seen = vec![false; len];
+    for &i in order {
+        if i >= len || seen[i] {
+            return false;
+        }
+        seen[i] = true;
+    }
+    true
+}
+
+/// CR 603.3b: Apply a player's chosen order to their group, then either emit
+/// the next `OrderTriggers` prompt (next-most-AP unordered group) or — when
+/// every group is ordered — concatenate them in placement order (NAP-first)
+/// and dispatch through the standard pipeline. The ordering-vs-input-pause
+/// invariant (issue #531 v2): every group's ordering is fully resolved
+/// *before* any trigger is dispatched, so a trigger that pauses on input
+/// stashes only already-ordered un-dispatched triggers into `deferred_triggers`
+/// — no ordering choice can be skipped.
+pub(crate) fn handle_order_triggers(
+    state: &mut GameState,
+    order: Vec<usize>,
+) -> Result<crate::types::game_state::WaitingFor, super::engine::EngineError> {
+    use crate::types::game_state::WaitingFor;
+
+    let pending_order = state.pending_trigger_order.as_mut().ok_or_else(|| {
+        super::engine::EngineError::InvalidAction(
+            "OrderTriggers submitted with no pending ordering pass".to_string(),
+        )
+    })?;
+
+    // Locate the most-AP unordered group — same selector as `build_next_order_triggers_prompt`.
+    let target_idx = pending_order
+        .groups
+        .iter()
+        .rposition(|g| !g.ordered)
+        .ok_or_else(|| {
+            super::engine::EngineError::InvalidAction(
+                "OrderTriggers submitted but every group is already ordered".to_string(),
+            )
+        })?;
+
+    let group = &mut pending_order.groups[target_idx];
+    let group_len = group.triggers.len();
+    if !is_valid_permutation(&order, group_len) {
+        return Err(super::engine::EngineError::InvalidAction(format!(
+            "OrderTriggers order {order:?} is not a permutation of 0..{group_len}"
+        )));
+    }
+
+    // Apply the permutation: index 0 of `order` selects which input trigger
+    // ends up at output position 0 (bottom of this controller's stack-slot).
+    let mut reordered: Vec<PendingTriggerContext> = Vec::with_capacity(group_len);
+    let mut taken: Vec<Option<PendingTriggerContext>> =
+        group.triggers.drain(..).map(Some).collect();
+    for &i in &order {
+        // permutation validity ensures `taken[i]` is `Some`.
+        reordered.push(taken[i].take().expect("valid permutation"));
+    }
+    group.triggers = reordered;
+    group.ordered = true;
+
+    // More groups awaiting a choice? Emit the next prompt.
+    if let Some(wf) = build_next_order_triggers_prompt(state) {
+        return Ok(wf);
+    }
+
+    // All groups ordered — concatenate in placement order (NAP-first) and
+    // dispatch through the same loop `process_triggers` uses. Reset
+    // `state.waiting_for` to Priority before dispatch so the post-dispatch
+    // check below correctly detects whether dispatch set a NEW pause state
+    // (vs leaving the stale `OrderTriggers` that we entered with).
+    let order_state = state
+        .pending_trigger_order
+        .take()
+        .expect("pending_trigger_order populated above");
+    state.waiting_for = WaitingFor::Priority {
+        player: state.active_player,
+    };
+    let pending: Vec<PendingTriggerContext> = order_state
+        .groups
+        .into_iter()
+        .flat_map(|g| g.triggers)
+        .collect();
+    dispatch_collected_triggers(state, pending);
+
+    // After dispatch, `state.pending_trigger` and/or `state.waiting_for` may
+    // have been set by `dispatch_pending_trigger_context` (target-selection,
+    // distribute-among, etc.). Surface whichever target-selection state the
+    // engine entered, mirroring the `ChooseReplacement` post-handler pipeline.
+    if state.pending_trigger.is_some()
+        && !matches!(
+            state.waiting_for,
+            WaitingFor::DistributeAmong { .. } | WaitingFor::TriggerTargetSelection { .. }
+        )
+    {
+        if let Some(wf) = super::engine::begin_pending_trigger_target_selection(state)? {
+            return Ok(wf);
+        }
+    }
+    if !matches!(state.waiting_for, WaitingFor::Priority { .. }) {
+        // dispatch_pending_trigger_context set a non-Priority waiting_for
+        // (DistributeAmong, etc.) — surface it.
+        return Ok(state.waiting_for.clone());
+    }
+    // Fall through to Priority for the active player.
+    Ok(WaitingFor::Priority {
+        player: state.active_player,
+    })
 }
 
 /// CR 603.2 + CR 603.3b: Collect triggers matching `events` and enqueue them
@@ -7027,6 +7299,8 @@ pub mod tests {
         }];
 
         process_triggers(&mut state, &events);
+        // CR 603.3b (#531): drain the per-controller ordering prompt.
+        super::drain_order_triggers_with_identity(&mut state);
 
         // Two ward triggers + original spell = 3
         assert_eq!(
@@ -10858,6 +11132,12 @@ pub mod tests {
         )
         .expect("declare attackers");
 
+        // CR 603.3b (#531): The active player controls 2 simultaneous attack
+        // triggers; the engine surfaces an OrderTriggers prompt first. Drain
+        // with identity order so the legacy `TriggerTargetSelection` assertion
+        // below sees the post-ordering pause state.
+        super::drain_order_triggers_with_identity(&mut state);
+
         // After declare_attackers, the engine should be prompting the
         // attacker's controller to pick a target for the first triggered
         // ability. The second trigger must be parked in `deferred_triggers`,
@@ -11451,6 +11731,13 @@ pub mod tests {
                             })
                         })
                         .expect("target selection must be accepted");
+                }
+                // CR 603.3b (#531): drain ordering prompts with identity order.
+                WaitingFor::OrderTriggers { triggers, .. } => {
+                    let order: Vec<usize> = (0..triggers.len()).collect();
+                    runner
+                        .act(GameAction::OrderTriggers { order })
+                        .expect("identity OrderTriggers must succeed");
                 }
                 _ => {
                     if runner.act(GameAction::PassPriority).is_err() {
@@ -12423,12 +12710,42 @@ mod dedup_regression_tests {
         AbilityDefinition, AbilityKind, Effect, QuantityExpr, TargetFilter, TargetRef,
         TriggerDefinition,
     };
+    use crate::types::actions::GameAction;
     use crate::types::card_type::CoreType;
     use crate::types::events::GameEvent;
-    use crate::types::game_state::{GameState, ZoneChangeRecord};
+    use crate::types::game_state::{GameState, WaitingFor, ZoneChangeRecord};
     use crate::types::identifiers::{CardId, ObjectId};
+    use crate::types::phase::Phase;
     use crate::types::player::PlayerId;
     use crate::types::zones::Zone;
+
+    fn setup() -> GameState {
+        GameState::new_two_player(42)
+    }
+
+    fn make_creature(
+        state: &mut GameState,
+        player: PlayerId,
+        name: &str,
+        power: i32,
+        toughness: i32,
+    ) -> ObjectId {
+        let id = create_object(
+            state,
+            CardId(state.next_object_id),
+            player,
+            name.to_string(),
+            Zone::Battlefield,
+        );
+        let obj = state.objects.get_mut(&id).unwrap();
+        obj.card_types.core_types.push(CoreType::Creature);
+        obj.base_card_types = obj.card_types.clone();
+        obj.base_power = Some(power);
+        obj.base_toughness = Some(toughness);
+        obj.power = Some(power);
+        obj.toughness = Some(toughness);
+        id
+    }
 
     /// Build a minimal `Draw 1` triggered ability that matches a given mode.
     fn draw_one_trigger(mode: TriggerMode) -> TriggerDefinition {
@@ -12543,6 +12860,8 @@ mod dedup_regression_tests {
         };
 
         process_triggers(&mut state, &[event]);
+        // CR 603.3b (#531): drain the per-controller ordering prompt.
+        super::drain_order_triggers_with_identity(&mut state);
         let observer_triggers = state
             .stack
             .iter()
@@ -12580,6 +12899,8 @@ mod dedup_regression_tests {
         };
 
         process_triggers(&mut state, &[event]);
+        // CR 603.3b (#531): drain the per-controller ordering prompt.
+        super::drain_order_triggers_with_identity(&mut state);
         let observer_triggers = state
             .stack
             .iter()
@@ -12620,6 +12941,8 @@ mod dedup_regression_tests {
         };
 
         process_triggers(&mut state, &[event]);
+        // CR 603.3b (#531): drain the per-controller ordering prompt.
+        super::drain_order_triggers_with_identity(&mut state);
         let observer_triggers = state
             .stack
             .iter()
@@ -12657,6 +12980,8 @@ mod dedup_regression_tests {
         };
 
         process_triggers(&mut state, &[event]);
+        // CR 603.3b (#531): drain the per-controller ordering prompt.
+        super::drain_order_triggers_with_identity(&mut state);
         let observer_triggers = state
             .stack
             .iter()
@@ -12796,6 +13121,10 @@ mod dedup_regression_tests {
         };
 
         process_triggers(&mut state, &[event]);
+        // CR 603.3b (#531): doubled triggers fire as 2 in the same controller's
+        // group, prompting OrderTriggers. Drain with identity to recover the
+        // pre-#531 deterministic stack-placement that this assertion expects.
+        super::drain_order_triggers_with_identity(&mut state);
         let observer_triggers = state
             .stack
             .iter()
@@ -12855,6 +13184,8 @@ mod dedup_regression_tests {
         };
 
         process_triggers(&mut state, &[event]);
+        // CR 603.3b (#531): drain the per-controller ordering prompt.
+        super::drain_order_triggers_with_identity(&mut state);
         let observer_triggers = state
             .stack
             .iter()
@@ -12908,6 +13239,8 @@ mod dedup_regression_tests {
         };
 
         process_triggers(&mut state, &[event]);
+        // CR 603.3b (#531): drain the per-controller ordering prompt.
+        super::drain_order_triggers_with_identity(&mut state);
         let observer_triggers = state
             .stack
             .iter()
@@ -12950,6 +13283,8 @@ mod dedup_regression_tests {
         };
 
         process_triggers(&mut state, &[event]);
+        // CR 603.3b (#531): drain the per-controller ordering prompt.
+        super::drain_order_triggers_with_identity(&mut state);
         let observer_triggers = state
             .stack
             .iter()
@@ -12993,6 +13328,8 @@ mod dedup_regression_tests {
         };
 
         process_triggers(&mut state, &[event]);
+        // CR 603.3b (#531): drain the per-controller ordering prompt.
+        super::drain_order_triggers_with_identity(&mut state);
         let observer_triggers = state
             .stack
             .iter()
@@ -13046,6 +13383,8 @@ mod dedup_regression_tests {
         };
 
         process_triggers(&mut state, &[event]);
+        // CR 603.3b (#531): drain the per-controller ordering prompt.
+        super::drain_order_triggers_with_identity(&mut state);
         let observer_triggers = state
             .stack
             .iter()
@@ -13365,6 +13704,224 @@ mod dedup_regression_tests {
             "with 5 other Mountains, the condition must pass"
         );
     }
+
+    // ── CR 603.3b — Trigger-order choice for simultaneous triggers (issue #531) ──
+
+    /// Helper: install a permanent with a `TriggerMode::Phase` trigger whose
+    /// effect draws `n` cards for the controller (no targets, no input). Used
+    /// by the simultaneous-trigger ordering tests.
+    fn make_phase_trigger_source(
+        state: &mut GameState,
+        owner: PlayerId,
+        name: &str,
+        draw_count: i32,
+    ) -> ObjectId {
+        let id = make_creature(state, owner, name, 1, 1);
+        let trig_def = TriggerDefinition::new(TriggerMode::Phase)
+            .phase(Phase::Upkeep)
+            .execute(AbilityDefinition::new(
+                AbilityKind::Database,
+                Effect::Draw {
+                    count: QuantityExpr::Fixed { value: draw_count },
+                    target: TargetFilter::Controller,
+                },
+            ))
+            .description(format!("{name}: at the beginning of upkeep, draw a card."));
+        let obj = state.objects.get_mut(&id).unwrap();
+        obj.trigger_definitions.push(trig_def.clone());
+        std::sync::Arc::make_mut(&mut obj.base_trigger_definitions).push(trig_def);
+        id
+    }
+
+    /// Read the source IDs of the current stack entries in stack-bottom-to-top
+    /// order. Each `StackEntry::source_id` lets the test discriminate which
+    /// trigger ended up where.
+    fn stack_source_ids(state: &GameState) -> Vec<ObjectId> {
+        state.stack.iter().map(|e| e.source_id).collect()
+    }
+
+    /// CR 603.3b: When the active player controls two simultaneously-firing
+    /// triggers, `process_triggers` must surface `WaitingFor::OrderTriggers`
+    /// rather than placing them on the stack in a fixed deterministic order.
+    /// **Discriminator**: submitting two different permutations produces two
+    /// different stacks. A deterministic-ordering engine would yield the same
+    /// stack for both inputs and fail this test.
+    #[test]
+    fn order_triggers_two_distinct_orders_produce_distinct_stacks() {
+        let run = |order: Vec<usize>| -> Vec<ObjectId> {
+            let mut state = setup();
+            state.active_player = PlayerId(0);
+            state.priority_player = PlayerId(0);
+            state.phase = Phase::Upkeep;
+            let src_a = make_phase_trigger_source(&mut state, PlayerId(0), "Source A", 1);
+            let src_b = make_phase_trigger_source(&mut state, PlayerId(0), "Source B", 1);
+            // Pre-stamp entered timestamps so collect_pending_triggers has a
+            // deterministic placement seed.
+            state
+                .objects
+                .get_mut(&src_a)
+                .unwrap()
+                .entered_battlefield_turn = Some(1);
+            state
+                .objects
+                .get_mut(&src_b)
+                .unwrap()
+                .entered_battlefield_turn = Some(2);
+
+            let event = GameEvent::PhaseChanged {
+                phase: Phase::Upkeep,
+            };
+            process_triggers(&mut state, &[event]);
+
+            // The active player must be prompted to order the two triggers.
+            let WaitingFor::OrderTriggers { player, triggers } = state.waiting_for.clone() else {
+                panic!(
+                    "expected WaitingFor::OrderTriggers, got {:?}",
+                    state.waiting_for
+                );
+            };
+            assert_eq!(player, PlayerId(0));
+            assert_eq!(triggers.len(), 2, "both triggers must be in the prompt");
+
+            crate::game::engine::apply_as_current(&mut state, GameAction::OrderTriggers { order })
+                .expect("submit chosen order");
+
+            stack_source_ids(&state)
+        };
+
+        let stack_identity = run(vec![0, 1]);
+        let stack_reversed = run(vec![1, 0]);
+        assert_eq!(stack_identity.len(), 2);
+        assert_eq!(stack_reversed.len(), 2);
+        assert_ne!(
+            stack_identity, stack_reversed,
+            "different OrderTriggers permutations must yield distinct stack orderings — \
+             a deterministic engine (no player choice) would produce identical stacks"
+        );
+        // And the reversed input is literally the identity's reverse.
+        let mut expected = stack_identity.clone();
+        expected.reverse();
+        assert_eq!(
+            stack_reversed, expected,
+            "stack-bottom-to-top ordering must mirror the submitted permutation"
+        );
+    }
+
+    /// CR 603.3b: A player with exactly one trigger needs no ordering choice.
+    /// `process_triggers` must NOT emit `WaitingFor::OrderTriggers`; the
+    /// trigger goes straight to the stack via the existing dispatch loop.
+    #[test]
+    fn order_triggers_single_trigger_does_not_prompt() {
+        let mut state = setup();
+        state.active_player = PlayerId(0);
+        state.priority_player = PlayerId(0);
+        state.phase = Phase::Upkeep;
+        let _src = make_phase_trigger_source(&mut state, PlayerId(0), "Solo Source", 1);
+
+        process_triggers(
+            &mut state,
+            &[GameEvent::PhaseChanged {
+                phase: Phase::Upkeep,
+            }],
+        );
+
+        assert!(
+            !matches!(state.waiting_for, WaitingFor::OrderTriggers { .. }),
+            "single trigger must not prompt for ordering; got {:?}",
+            state.waiting_for
+        );
+        assert!(
+            state.pending_trigger_order.is_none(),
+            "no in-flight ordering state for a single trigger"
+        );
+        assert_eq!(
+            state.stack.len(),
+            1,
+            "the single trigger reaches the stack directly"
+        );
+    }
+
+    /// CR 603.3b + CR 101.4 + CR 405.3: In a 3-player game with both AP and
+    /// NAP controlling 2 simultaneous triggers each, the active player is
+    /// prompted FIRST (CR 101.4 — APNAP choice order), then each NAP in turn
+    /// order. The final stack reflects the placement order (NAP-first =
+    /// bottom of stack) per CR 405.3.
+    #[test]
+    fn order_triggers_apnap_three_players() {
+        let mut state = GameState::new(crate::types::format::FormatConfig::commander(), 3, 123);
+        state.active_player = PlayerId(0);
+        state.priority_player = PlayerId(0);
+        state.phase = Phase::Upkeep;
+        state.waiting_for = WaitingFor::Priority {
+            player: PlayerId(0),
+        };
+
+        let p0_a = make_phase_trigger_source(&mut state, PlayerId(0), "P0 Source A", 1);
+        let p0_b = make_phase_trigger_source(&mut state, PlayerId(0), "P0 Source B", 1);
+        let p1_a = make_phase_trigger_source(&mut state, PlayerId(1), "P1 Source A", 1);
+        let p1_b = make_phase_trigger_source(&mut state, PlayerId(1), "P1 Source B", 1);
+        for (i, id) in [p0_a, p0_b, p1_a, p1_b].iter().enumerate() {
+            state.objects.get_mut(id).unwrap().entered_battlefield_turn = Some(i as u32 + 1);
+        }
+
+        process_triggers(
+            &mut state,
+            &[GameEvent::PhaseChanged {
+                phase: Phase::Upkeep,
+            }],
+        );
+
+        // CR 101.4: active player (P0) is prompted FIRST.
+        let WaitingFor::OrderTriggers { player, .. } = state.waiting_for.clone() else {
+            panic!(
+                "expected OrderTriggers for P0 first, got {:?}",
+                state.waiting_for
+            );
+        };
+        assert_eq!(player, PlayerId(0), "AP must choose before NAPs (CR 101.4)");
+
+        // P0 submits identity order.
+        crate::game::engine::apply_as_current(
+            &mut state,
+            GameAction::OrderTriggers { order: vec![0, 1] },
+        )
+        .expect("P0 submits");
+
+        // Next prompt: P1 (next NAP in turn order).
+        let WaitingFor::OrderTriggers { player, .. } = state.waiting_for.clone() else {
+            panic!(
+                "expected OrderTriggers for P1 after P0, got {:?}",
+                state.waiting_for
+            );
+        };
+        assert_eq!(player, PlayerId(1));
+
+        crate::game::engine::apply_as_current(
+            &mut state,
+            GameAction::OrderTriggers { order: vec![0, 1] },
+        )
+        .expect("P1 submits");
+
+        // Now all four triggers must be on the stack; NAP's pair must be
+        // placed FIRST (bottom of stack per CR 405.3 + 603.3b APNAP).
+        let stack_sources = stack_source_ids(&state);
+        assert_eq!(stack_sources.len(), 4, "four triggers on the stack");
+        // Bottom two are the NAP (P1)'s pair; top two are AP (P0)'s pair.
+        let p1_ids = [p1_a, p1_b];
+        let p0_ids = [p0_a, p0_b];
+        for id in &stack_sources[0..2] {
+            assert!(
+                p1_ids.contains(id),
+                "stack bottom must contain NAP triggers (CR 405.3 + 603.3b)"
+            );
+        }
+        for id in &stack_sources[2..4] {
+            assert!(
+                p0_ids.contains(id),
+                "stack top must contain AP triggers (CR 405.3 + 603.3b)"
+            );
+        }
+    }
 }
 
 #[cfg(test)]
@@ -13525,6 +14082,7 @@ mod devour_runtime_tests {
             &mut state,
             Some(obj_id),
             None,
+            Some(ReplacementEvent::Moved),
             &mut events,
         );
 

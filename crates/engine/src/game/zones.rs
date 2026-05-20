@@ -46,11 +46,21 @@ fn capture_attachment_snapshot(
 /// CR 400.7: Snapshot LKI and apply all cleanup side effects when an object
 /// leaves its current zone. Shared by `move_to_zone` and `move_to_library_at_index`.
 ///
-/// Handles: LKI snapshot (CR 400.7), transform revert (CR 712.14),
-/// exile permission clearing (CR 113.6e), monstrous reset (CR 701.37b),
-/// counter clearing (CR 122.2), layer pruning, and mana-tap cleanup.
+/// Handles: LKI snapshot (CR 400.7), activation-use clearing, transform
+/// revert (CR 712.14), exile permission clearing (CR 113.6e), monstrous reset
+/// (CR 701.37b), counter clearing (CR 122.2), layer pruning, and mana-tap
+/// cleanup.
 fn apply_zone_exit_cleanup(state: &mut GameState, object_id: ObjectId, from: Zone, to: Zone) {
     state.revealed_cards.remove(&object_id);
+    // CR 400.7 + CR 403.4: Activation-use history belongs to the old
+    // object. `ObjectId` is storage identity here, so clear per-object counts
+    // at the zone-change boundary before the same id can represent a new object.
+    state
+        .activated_abilities_this_turn
+        .retain(|(id, _), _| *id != object_id);
+    state
+        .activated_abilities_this_game
+        .retain(|(id, _), _| *id != object_id);
 
     // CR 400.7: Snapshot LKI before zone change from battlefield or exile.
     // Power/toughness reflect layer modifications on battlefield (Layer 7);
@@ -727,6 +737,44 @@ mod tests {
         assert!(!state.battlefield.contains(&id));
         assert!(state.players[0].graveyard.contains(&id));
         assert_eq!(state.objects[&id].zone, Zone::Graveyard);
+    }
+
+    #[test]
+    fn move_to_zone_clears_old_object_activation_counts() {
+        let mut state = setup();
+        let id = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Quirion Ranger".to_string(),
+            Zone::Battlefield,
+        );
+        let other = create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(0),
+            "Relic".to_string(),
+            Zone::Battlefield,
+        );
+
+        state.activated_abilities_this_turn.insert((id, 0), 1);
+        state.activated_abilities_this_game.insert((id, 0), 1);
+        state.activated_abilities_this_turn.insert((other, 0), 1);
+        state.activated_abilities_this_game.insert((other, 0), 1);
+
+        let mut events = Vec::new();
+        move_to_zone(&mut state, id, Zone::Hand, &mut events);
+
+        assert!(!state.activated_abilities_this_turn.contains_key(&(id, 0)));
+        assert!(!state.activated_abilities_this_game.contains_key(&(id, 0)));
+        assert_eq!(
+            state.activated_abilities_this_turn.get(&(other, 0)),
+            Some(&1)
+        );
+        assert_eq!(
+            state.activated_abilities_this_game.get(&(other, 0)),
+            Some(&1)
+        );
     }
 
     #[test]

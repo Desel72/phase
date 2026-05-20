@@ -576,6 +576,7 @@ pub fn resolve_top(state: &mut GameState, events: &mut Vec<GameEvent>) {
                             state,
                             Some(entry.id),
                             None,
+                            Some(crate::types::replacements::ReplacementEvent::Moved),
                             events,
                         );
                     }

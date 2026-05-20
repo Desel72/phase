@@ -337,6 +337,48 @@ mod tests {
         assert_eq!(filtered.objects[&card_b].name, "Hidden Card");
     }
 
+    /// CR 603.3b: `WaitingFor::OrderTriggers` carries only public information
+    /// (triggers on their way to the shared stack). The variant must survive
+    /// `filter_state_for_player` unchanged for both the prompted player and
+    /// the opponent — no hiding, no redaction. `pending_trigger_order` is
+    /// engine-internal scheduling state that references battlefield/stack
+    /// objects only; it must also pass through unchanged.
+    #[test]
+    fn order_triggers_waiting_for_passes_through_to_both_players() {
+        use engine::types::game_state::PendingTriggerSummary;
+
+        let mut state = GameState::new_two_player(42);
+        let summaries = vec![
+            PendingTriggerSummary {
+                source_id: ObjectId(11),
+                source_name: "Wedding Announcement".to_string(),
+                description: "At the beginning of your end step, create a token.".to_string(),
+            },
+            PendingTriggerSummary {
+                source_id: ObjectId(12),
+                source_name: "Ocelot Pride".to_string(),
+                description: "At the beginning of your end step, if you gained life...".to_string(),
+            },
+        ];
+        state.waiting_for = WaitingFor::OrderTriggers {
+            player: PlayerId(0),
+            triggers: summaries.clone(),
+        };
+
+        for viewer in [PlayerId(0), PlayerId(1)] {
+            let filtered = filter_state_for_player(&state, viewer);
+            match filtered.waiting_for {
+                WaitingFor::OrderTriggers { player, triggers } => {
+                    assert_eq!(player, PlayerId(0));
+                    assert_eq!(triggers, summaries);
+                }
+                other => panic!(
+                    "OrderTriggers must survive filtering for viewer {viewer:?}: got {other:?}"
+                ),
+            }
+        }
+    }
+
     proptest! {
         #![proptest_config(ProptestConfig {
             cases: 16,

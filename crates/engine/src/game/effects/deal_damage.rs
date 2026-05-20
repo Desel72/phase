@@ -226,7 +226,7 @@ pub(crate) fn apply_damage_to_target(
                 // after the call to prevent leakage into unrelated later
                 // replacements.
                 let _ = crate::game::engine_replacement::apply_pending_post_replacement_effect(
-                    state, None, None, events,
+                    state, None, None, None, events,
                 );
             }
             Ok(DamageResult::Applied(0))

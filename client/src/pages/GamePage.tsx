@@ -56,6 +56,7 @@ import { OptionalCostModalContent } from "../components/modal/OptionalCostModal.
 import { ChooseOneOfBranchModal } from "../components/modal/ChooseOneOfBranchModal.tsx";
 import { ModeChoiceModal } from "../components/modal/ModeChoiceModal.tsx";
 import { ReplacementModal } from "../components/modal/ReplacementModal.tsx";
+import { TriggerOrderModal } from "../components/modal/TriggerOrderModal.tsx";
 import { BattleProtectorModal } from "../components/modal/BattleProtectorModal.tsx";
 import { TributeModal } from "../components/modal/TributeModal.tsx";
 import { CombatTaxModal } from "../components/modal/CombatTaxModal.tsx";
@@ -1226,6 +1227,8 @@ function GamePageContent({
           canActForWaitingState && <PayAmountChoiceUI />}
         {waitingFor?.type === "ReplacementChoice" &&
           canActForWaitingState && <ReplacementModal />}
+        {waitingFor?.type === "OrderTriggers" &&
+          canActForWaitingState && <TriggerOrderModal />}
         <BattleProtectorModal />
         <TributeModal />
         <CombatTaxModal />

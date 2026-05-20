@@ -1104,6 +1104,13 @@ impl GameRunner {
     /// Pass priority until the stack is empty, or stop if the engine no longer advances.
     pub fn advance_until_stack_empty(&mut self) {
         for _ in 0..40 {
+            // CR 603.3b (#531): drain the per-controller ordering prompt with identity
+            // before checking stack emptiness — the prompt can surface mid-resolution
+            // with an empty stack while triggers wait to be dispatched.
+            if matches!(self.state.waiting_for, WaitingFor::OrderTriggers { .. }) {
+                super::triggers::drain_order_triggers_with_identity(&mut self.state);
+                continue;
+            }
             if self.state.stack.is_empty() {
                 break;
             }
@@ -1211,6 +1218,7 @@ impl GameRunner {
             WaitingFor::UntapChoice { .. } => "UntapChoice",
             WaitingFor::GameOver { .. } => "GameOver",
             WaitingFor::ReplacementChoice { .. } => "ReplacementChoice",
+            WaitingFor::OrderTriggers { .. } => "OrderTriggers",
             WaitingFor::CopyTargetChoice { .. } => "CopyTargetChoice",
             WaitingFor::ExploreChoice { .. } => "ExploreChoice",
             WaitingFor::EquipTarget { .. } => "EquipTarget",

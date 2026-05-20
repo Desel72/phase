@@ -4851,6 +4851,9 @@ mod undying_persist_runtime_tests {
         let mut events = Vec::new();
         move_to_zone(&mut state, obj_id, Zone::Graveyard, &mut events);
         process_triggers(&mut state, &events);
+        // CR 603.3b (#531): controller has 2 simultaneous triggers (Undying
+        // + Persist); drain the ordering prompt with identity order.
+        crate::game::triggers::drain_order_triggers_with_identity(&mut state);
 
         // Drain the entire stack.
         while !state.stack.is_empty() {
@@ -5533,6 +5536,10 @@ mod myriad_runtime_tests {
             },
         )
         .expect("declare Myriad attacker");
+        // CR 603.3b (#531): multiple Myriad triggers from same controller
+        // surface an OrderTriggers prompt; drain with identity for legacy
+        // stack-assertion tests.
+        crate::game::triggers::drain_order_triggers_with_identity(state);
     }
 
     fn resolve_myriad_trigger(state: &mut GameState) {

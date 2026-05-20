@@ -53,6 +53,12 @@ pub fn eliminate_player(state: &mut GameState, player: PlayerId, events: &mut Ve
         // by emitting MulliganStarted-equivalent transition state.
         prune_mulligan_pending(state, events);
 
+        // CR 603.3b + CR 800.4a: Resolve any in-flight trigger-ordering pass
+        // around the elimination — drop triggers controlled by eliminated
+        // players, auto-resolve their ordering groups with identity order,
+        // and re-emit / advance the prompt as needed.
+        prune_pending_trigger_order(state);
+
         if let Some(waiting_pid) = state.waiting_for.acting_player() {
             if !players::is_alive(state, waiting_pid) {
                 let next = players::next_player(state, waiting_pid);
@@ -111,6 +117,69 @@ fn prune_mulligan_pending(state: &mut GameState, events: &mut Vec<GameEvent>) {
             }
         }
         _ => {}
+    }
+}
+
+/// CR 603.3b + CR 800.4a: Resolve an in-flight trigger-ordering pass when one
+/// or more players have left the game. Triggers controlled by eliminated
+/// players are dropped (CR 800.4a — abilities they would control are removed
+/// from the queue / not placed). Groups for eliminated controllers are
+/// auto-resolved with the identity order (an eliminated player makes no
+/// choices). If the prompted group is the one being resolved, the
+/// `WaitingFor::OrderTriggers` prompt is updated to point at the next-most-AP
+/// unordered group; if every group becomes ordered, the pending ordering
+/// pass is collapsed and the concatenated queue is stashed in
+/// `state.deferred_triggers` so the next drain-site picks it up.
+fn prune_pending_trigger_order(state: &mut GameState) {
+    let living_players: Vec<PlayerId> = state
+        .players
+        .iter()
+        .filter(|player| !player.is_eliminated)
+        .map(|player| player.id)
+        .collect();
+    let Some(order) = state.pending_trigger_order.as_mut() else {
+        return;
+    };
+
+    // Drop triggers controlled by eliminated players and auto-resolve
+    // eliminated controllers' groups with identity order.
+    for group in order.groups.iter_mut() {
+        if !living_players.contains(&group.controller) {
+            // Identity order = current order; just mark as resolved.
+            group.ordered = true;
+        }
+        // CR 800.4a: even within an alive controller's group, drop any
+        // triggers whose own controller is now eliminated (delayed-trigger
+        // re-attribution corner case — pre-elimination snapshot may have
+        // triggers whose `pending.controller` belongs to a now-dead player).
+        group
+            .triggers
+            .retain(|ctx| living_players.contains(&ctx.pending.controller));
+        if group.triggers.len() <= 1 {
+            group.ordered = true;
+        }
+    }
+    // Drop groups whose controller is gone AND whose triggers were all dropped.
+    order.groups.retain(|g| !g.triggers.is_empty());
+
+    // If every group is now ordered, collapse the pending pass and stash
+    // the concatenated queue into deferred_triggers so the next drain-site
+    // (engine_stack, engine_resolution_choices) flushes it onto the stack.
+    if order.groups.iter().all(|g| g.ordered) {
+        let order = state.pending_trigger_order.take().expect("present above");
+        let triggers: Vec<_> = order.groups.into_iter().flat_map(|g| g.triggers).collect();
+        state.deferred_triggers.extend(triggers);
+        // The waiting_for caller below (`acting_player()` is_alive check) will
+        // re-point to a living player's Priority since OrderTriggers no longer
+        // matches.
+        return;
+    }
+
+    // Some groups still need a choice — refresh the OrderTriggers prompt so
+    // it points at the next-most-AP unordered group (possibly the same one
+    // if its controller is alive).
+    if let Some(wf) = super::triggers::build_next_order_triggers_prompt_public(state) {
+        state.waiting_for = wf;
     }
 }
 

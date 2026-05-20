@@ -81,6 +81,9 @@ export function ManaPaymentUI() {
     if (isPhyrexianPayment && spellObjectId != null) {
       return gameState.objects[spellObjectId]?.name ?? null;
     }
+    if (isManaPayment && gameState.pending_cast) {
+      return gameState.objects[gameState.pending_cast.object_id]?.name ?? null;
+    }
     if (isManaPayment) {
       const stack = gameState.stack;
       if (stack.length === 0) return null;

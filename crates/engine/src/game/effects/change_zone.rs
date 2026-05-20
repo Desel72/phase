@@ -2955,6 +2955,9 @@ mod tests {
 
         let events = enter_permanent_via_change_zone(&mut state, land, true);
         process_triggers(&mut state, &events);
+        // CR 603.3b (#531): controller has 2 simultaneous triggers — drain
+        // the OrderTriggers prompt with identity order.
+        crate::game::triggers::drain_order_triggers_with_identity(&mut state);
         assert_eq!(
             state.stack.len(),
             2,
