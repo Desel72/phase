@@ -20,7 +20,7 @@ function getArtCropUrl(card: ScryfallCard): string {
 }
 
 function isFormatLegal(card: ScryfallCard, format: BrowserLegalityFilter): boolean {
-  if (format === "all") return true;
+  if (format === "all" || format === "TinyLeaders") return true;
   return card.legalities?.[format] === "legal";
 }
 

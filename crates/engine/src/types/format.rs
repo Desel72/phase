@@ -45,6 +45,7 @@ pub enum GameFormat {
     Pauper,
     PauperCommander,
     DuelCommander,
+    TinyLeaders,
     Brawl,
     HistoricBrawl,
     FreeForAll,
@@ -114,7 +115,10 @@ impl GameFormat {
             GameFormat::DuelCommander => Some(LegalityFormat::DuelCommander),
             GameFormat::Brawl => Some(LegalityFormat::StandardBrawl),
             GameFormat::HistoricBrawl => Some(LegalityFormat::Brawl),
-            GameFormat::FreeForAll | GameFormat::TwoHeadedGiant | GameFormat::Limited => None,
+            GameFormat::TinyLeaders
+            | GameFormat::FreeForAll
+            | GameFormat::TwoHeadedGiant
+            | GameFormat::Limited => None,
         }
     }
 
@@ -138,6 +142,7 @@ impl GameFormat {
             | GameFormat::DuelCommander
             | GameFormat::Brawl
             | GameFormat::HistoricBrawl => SideboardPolicy::Forbidden,
+            GameFormat::TinyLeaders => SideboardPolicy::Limited(10),
             GameFormat::FreeForAll | GameFormat::TwoHeadedGiant | GameFormat::Limited => {
                 SideboardPolicy::Unlimited
             }
@@ -195,6 +200,7 @@ impl GameFormat {
             GameFormat::Pauper => "Pauper",
             GameFormat::PauperCommander => "Pauper Commander",
             GameFormat::DuelCommander => "Duel Commander",
+            GameFormat::TinyLeaders => "Tiny Leaders: Reborn",
             GameFormat::Brawl => "Brawl",
             GameFormat::HistoricBrawl => "Historic Brawl",
             GameFormat::FreeForAll => "Free-for-All",
@@ -296,6 +302,14 @@ impl GameFormat {
                 description: "Commons-only singleton Commander",
                 group: FormatGroup::Commander,
                 default_config: FormatConfig::pauper_commander(),
+            },
+            FormatMetadata {
+                format: GameFormat::TinyLeaders,
+                label: "Tiny Leaders: Reborn",
+                short_label: "TLR",
+                description: "50-card Tiny singleton",
+                group: FormatGroup::Commander,
+                default_config: FormatConfig::tiny_leaders(),
             },
             FormatMetadata {
                 format: GameFormat::Brawl,
@@ -430,6 +444,25 @@ impl FormatConfig {
         }
     }
 
+    /// Tiny Leaders: Reborn: 50-card singleton command-zone format, 20 life,
+    /// no commander-damage loss threshold, and up to 10 sideboard cards.
+    pub fn tiny_leaders() -> Self {
+        FormatConfig {
+            format: GameFormat::TinyLeaders,
+            starting_life: 20,
+            min_players: 2,
+            max_players: 2,
+            deck_size: 50,
+            singleton: true,
+            command_zone: true,
+            commander_damage_threshold: None,
+            range_of_influence: None,
+            team_based: false,
+            uses_commander: false,
+            allow_debug_actions: false,
+        }
+    }
+
     /// Historic: non-rotating constructed using the Arena Historic card pool.
     pub fn historic() -> Self {
         FormatConfig {
@@ -554,6 +587,7 @@ impl FormatConfig {
             GameFormat::Pauper => Self::pauper(),
             GameFormat::PauperCommander => Self::pauper_commander(),
             GameFormat::DuelCommander => Self::duel_commander(),
+            GameFormat::TinyLeaders => Self::tiny_leaders(),
             GameFormat::Brawl => Self::brawl(),
             GameFormat::HistoricBrawl => Self::historic_brawl(),
             GameFormat::FreeForAll => Self::free_for_all(),
@@ -589,6 +623,21 @@ mod tests {
         assert!(config.singleton);
         assert!(config.command_zone);
         assert_eq!(config.commander_damage_threshold, Some(21));
+        assert!(!config.team_based);
+    }
+
+    #[test]
+    fn format_config_tiny_leaders() {
+        let config = FormatConfig::tiny_leaders();
+        assert_eq!(config.format, GameFormat::TinyLeaders);
+        assert_eq!(config.starting_life, 20);
+        assert_eq!(config.min_players, 2);
+        assert_eq!(config.max_players, 2);
+        assert_eq!(config.deck_size, 50);
+        assert!(config.singleton);
+        assert!(config.command_zone);
+        assert_eq!(config.commander_damage_threshold, None);
+        assert!(!config.uses_commander);
         assert!(!config.team_based);
     }
 
@@ -635,6 +684,10 @@ mod tests {
             SideboardPolicy::Forbidden
         );
         assert_eq!(
+            GameFormat::TinyLeaders.sideboard_policy(),
+            SideboardPolicy::Limited(10)
+        );
+        assert_eq!(
             GameFormat::FreeForAll.sideboard_policy(),
             SideboardPolicy::Unlimited
         );
@@ -668,6 +721,7 @@ mod tests {
             FormatConfig::pioneer(),
             FormatConfig::historic(),
             FormatConfig::pauper(),
+            FormatConfig::tiny_leaders(),
             FormatConfig::brawl(),
             FormatConfig::historic_brawl(),
             FormatConfig::free_for_all(),

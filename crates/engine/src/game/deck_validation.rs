@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::database::legality::{LegalityFormat, LegalityStatus};
 use crate::database::CardDatabase;
 use crate::parser::oracle::oracle_text_allows_commander;
-use crate::types::card::CardFace;
+use crate::types::card::{CardFace, CardRules, PrintedCardRef};
 use crate::types::card_type::{CoreType, Supertype};
 use crate::types::format::{GameFormat, SideboardPolicy};
 use crate::types::keywords::Keyword;
@@ -721,6 +721,396 @@ fn evaluate_brawl(
     }
 }
 
+/// Official Tiny Leaders: Reborn banlist snapshot.
+/// Source: https://official-tlr.com/banlist/ — latest update 2026-04-29.
+const TINY_LEADERS_DECK_BANNED: &[&str] = &[
+    "Ancestral Recall",
+    "Black Lotus",
+    "Balance",
+    "Channel",
+    "Chaos Orb",
+    "Chrome Mox",
+    "Counterbalance",
+    "Court of Cunning",
+    "Deflecting Swat",
+    "Demonic Tutor",
+    "Earthcraft",
+    "Falling Star",
+    "Fastbond",
+    "Fierce Guardianship",
+    "Forth Eorlingas!",
+    "Gaea's Cradle",
+    "Grindstone",
+    "Hermit Druid",
+    "High Tide",
+    "Imperial Seal",
+    "Jeweled Lotus",
+    "Karakas",
+    "Library of Alexandria",
+    "Lion's Eye Diamond",
+    "Maddening Hex",
+    "Mana Crypt",
+    "Mana Vault",
+    "Mind Twist",
+    "Mishra's Workshop",
+    "Mox Amber",
+    "Mox Diamond",
+    "Mox Emerald",
+    "Mox Jet",
+    "Mox Opal",
+    "Mox Pearl",
+    "Mox Ruby",
+    "Mox Sapphire",
+    "Mystical Tutor",
+    "Necropotence",
+    "Oko, Thief of Crowns",
+    "Price of Progress",
+    "Shahrazad",
+    "Skullclamp",
+    "Sol Ring",
+    "Strip Mine",
+    "Survival of the Fittest",
+    "Tasha's Hideous Laughter",
+    "Teferi, Time Raveler",
+    "Thassa's Oracle",
+    "The Tabernacle at Pendrell Vale",
+    "Time Vault",
+    "Time Walk",
+    "Timetwister",
+    "Tolarian Academy",
+    "True-Name Nemesis",
+    "Umezawa's Jitte",
+    "Vampiric Tutor",
+    "Wheel of Fortune",
+    "White Plume Adventurer",
+    "Yawgmoth's Will",
+];
+
+const TINY_LEADERS_COMMANDER_BANNED: &[&str] = &[
+    "Ajani, Nacatl Pariah",
+    "Ashiok, Dream Render",
+    "Derevi, Imperial Tactician",
+    "Erayo, Soratami Ascendant",
+    "Jeska, Thrice Reborn",
+    "Ketramose, the New Dawn",
+    "Nadu, Winged Wisdom",
+    "Rofellos, Llanowar Emissary",
+    "Uro, Titan of Nature's Wrath",
+    "Wrenn and Six",
+];
+
+const TINY_LEADERS_COMPANION_BANNED: &[&str] = &["Lutri, the Spellchaser"];
+
+pub(crate) fn tiny_leaders_companion_banned(name: &str) -> bool {
+    name_in_list(name, TINY_LEADERS_COMPANION_BANNED)
+}
+
+fn evaluate_tiny_leaders(
+    db: &CardDatabase,
+    request: &DeckCompatibilityRequest,
+    unknown_cards: &BTreeSet<String>,
+) -> CompatibilityCheck {
+    let mut reasons = Vec::new();
+
+    if !unknown_cards.is_empty() {
+        reasons.push(summarize_cards("Unknown cards", unknown_cards, 6));
+    }
+
+    if request.commander.is_empty() || request.commander.len() > 2 {
+        reasons.push(format!(
+            "Tiny Leaders: Reborn decks require 1 or 2 commanders (found {})",
+            request.commander.len()
+        ));
+    }
+
+    if request.commander.len() <= 2 {
+        let mut ineligible_commanders = BTreeSet::new();
+        let mut commander_bans = BTreeSet::new();
+        for name in &request.commander {
+            let Some(face) = db.get_face_by_name(resolve_card_name(db, name)) else {
+                continue;
+            };
+            if !is_tiny_leader_eligible(face) {
+                ineligible_commanders.insert(name.clone());
+            }
+            if name_in_list(&face.name, TINY_LEADERS_COMMANDER_BANNED) {
+                commander_bans.insert(face.name.clone());
+            }
+        }
+        if !ineligible_commanders.is_empty() {
+            reasons.push(summarize_cards(
+                "Tiny Leader must be a legendary creature, Vehicle, Spacecraft, planeswalker, or explicitly allow being a commander",
+                &ineligible_commanders,
+                6,
+            ));
+        }
+        if !commander_bans.is_empty() {
+            reasons.push(summarize_cards("Banned as Tiny Leader", &commander_bans, 6));
+        }
+
+        if request.commander.len() == 2 {
+            let face_a = db.get_face_by_name(resolve_card_name(db, &request.commander[0]));
+            let face_b = db.get_face_by_name(resolve_card_name(db, &request.commander[1]));
+            if let (Some(a), Some(b)) = (face_a, face_b) {
+                if !are_valid_partners(a, b) {
+                    reasons.push(format!(
+                        "Invalid partner pairing: {} and {} do not have compatible partner keywords",
+                        request.commander[0], request.commander[1]
+                    ));
+                }
+            }
+        }
+    }
+
+    if request.sideboard.len() > 10 {
+        reasons.push(format!(
+            "Sideboard has {} cards (maximum 10)",
+            request.sideboard.len()
+        ));
+    }
+
+    let represented_in_main = request
+        .commander
+        .iter()
+        .filter(|name| {
+            request
+                .main_deck
+                .iter()
+                .any(|card| card.eq_ignore_ascii_case(name))
+        })
+        .count();
+    let total_cards = request.main_deck.len() + (request.commander.len() - represented_in_main);
+    if total_cards != 50 {
+        reasons.push(format!(
+            "Tiny Leaders: Reborn deck must have exactly 50 main+commander cards (found {total_cards})"
+        ));
+    }
+
+    let counts = combined_copy_counts(db, request);
+    let singleton_violations = copy_limit_violations(db, &counts, 1);
+    if !singleton_violations.is_empty() {
+        reasons.push(summarize_cards(
+            "Singleton violations",
+            &singleton_violations,
+            6,
+        ));
+    }
+
+    let mut commander_identity = HashSet::new();
+    for name in &request.commander {
+        if let Some(face) = db.get_face_by_name(resolve_card_name(db, name)) {
+            commander_identity.extend(card_color_identity(face));
+        }
+    }
+
+    let mut identity_violations = BTreeSet::new();
+    let mut basic_land_type_violations = BTreeSet::new();
+    let mut tiny_identity_violations = BTreeSet::new();
+    let mut deck_bans = BTreeSet::new();
+    let mut category_bans = BTreeSet::new();
+
+    for name in all_deck_cards(request) {
+        if unknown_cards.contains(name) {
+            continue;
+        }
+        let resolved = resolve_card_name(db, name);
+        let Some(face) = db.get_face_by_name(resolved) else {
+            continue;
+        };
+
+        if name_in_list(&face.name, TINY_LEADERS_DECK_BANNED) {
+            deck_bans.insert(face.name.clone());
+        }
+        if tiny_leaders_category_banned(face) {
+            category_bans.insert(face.name.clone());
+        }
+
+        if !request
+            .commander
+            .iter()
+            .any(|commander| commander.eq_ignore_ascii_case(name))
+        {
+            for color in card_color_identity(face) {
+                if !commander_identity.contains(&color) {
+                    identity_violations.insert(name.to_string());
+                    break;
+                }
+            }
+        }
+
+        for color in basic_land_type_colors(face) {
+            if !commander_identity.contains(&color) {
+                basic_land_type_violations.insert(face.name.clone());
+                break;
+            }
+        }
+
+        if !tiny_leaders_cost_identity_ok(db, resolved) {
+            tiny_identity_violations.insert(face.name.clone());
+        }
+    }
+
+    if !deck_bans.is_empty() {
+        reasons.push(summarize_cards(
+            "Banned in Tiny Leaders: Reborn deck construction",
+            &deck_bans,
+            6,
+        ));
+    }
+    if !category_bans.is_empty() {
+        reasons.push(summarize_cards(
+            "Categorically excluded in Tiny Leaders: Reborn",
+            &category_bans,
+            6,
+        ));
+    }
+    if !identity_violations.is_empty() {
+        reasons.push(summarize_cards(
+            "Cards outside Tiny Leader color identity",
+            &identity_violations,
+            6,
+        ));
+    }
+    if !basic_land_type_violations.is_empty() {
+        reasons.push(summarize_cards(
+            "Cards with off-identity basic land types",
+            &basic_land_type_violations,
+            6,
+        ));
+    }
+    if !tiny_identity_violations.is_empty() {
+        reasons.push(summarize_cards(
+            "Cards outside Tiny cost identity",
+            &tiny_identity_violations,
+            6,
+        ));
+    }
+
+    CompatibilityCheck {
+        compatible: reasons.is_empty(),
+        reasons,
+    }
+}
+
+fn quick_tiny_leaders_check(
+    db: &CardDatabase,
+    request: &DeckCompatibilityRequest,
+) -> QuickCheckResult {
+    let unknown_cards = collect_unknown_cards(db, request);
+    let check = evaluate_tiny_leaders(db, request, &unknown_cards);
+    QuickCheckResult {
+        reason: check.reasons.into_iter().next(),
+        unknown_cards,
+    }
+}
+
+fn is_tiny_leader_eligible(face: &CardFace) -> bool {
+    let is_legendary = face.card_type.supertypes.contains(&Supertype::Legendary);
+    let subtypes = &face.card_type.subtypes;
+    let is_creature = face.card_type.core_types.contains(&CoreType::Creature);
+    let is_planeswalker = face.card_type.core_types.contains(&CoreType::Planeswalker);
+    let is_vehicle = subtypes.iter().any(|s| s.eq_ignore_ascii_case("Vehicle"));
+    let is_spacecraft_with_pt = subtypes
+        .iter()
+        .any(|s| s.eq_ignore_ascii_case("Spacecraft"))
+        && face.power.is_some()
+        && face.toughness.is_some();
+    let explicitly_allowed = face
+        .oracle_text
+        .as_ref()
+        .is_some_and(|text| oracle_text_allows_commander(text, &face.name));
+
+    explicitly_allowed
+        || (is_legendary && (is_creature || is_vehicle || is_spacecraft_with_pt || is_planeswalker))
+}
+
+fn basic_land_type_colors(face: &CardFace) -> Vec<ManaColor> {
+    let mut colors = Vec::new();
+    for subtype in &face.card_type.subtypes {
+        let color = match subtype.as_str() {
+            "Plains" => ManaColor::White,
+            "Island" => ManaColor::Blue,
+            "Swamp" => ManaColor::Black,
+            "Mountain" => ManaColor::Red,
+            "Forest" => ManaColor::Green,
+            _ => continue,
+        };
+        if !colors.contains(&color) {
+            colors.push(color);
+        }
+    }
+    colors
+}
+
+fn tiny_leaders_cost_identity_ok(db: &CardDatabase, name: &str) -> bool {
+    tiny_leaders_cost_faces(db, name)
+        .into_iter()
+        .all(tiny_leaders_face_cost_identity_ok)
+}
+
+fn tiny_leaders_face_cost_identity_ok(face: &CardFace) -> bool {
+    face.mana_cost.mana_value() <= 3
+        && face.keywords.iter().all(|keyword| match keyword {
+            Keyword::Prototype(cost) => cost.mana_value() <= 3,
+            _ => true,
+        })
+}
+
+fn tiny_leaders_cost_faces<'a>(db: &'a CardDatabase, name: &str) -> Vec<&'a CardFace> {
+    if let Some(rules) = db.get_by_name(name) {
+        return card_rules_faces(rules);
+    }
+
+    let Some(face) = db.get_face_by_name(name) else {
+        return Vec::new();
+    };
+    let mut faces = vec![face];
+    if let Some(oracle_id) = &face.scryfall_oracle_id {
+        let printed_ref = PrintedCardRef {
+            oracle_id: oracle_id.clone(),
+            face_name: face.name.clone(),
+        };
+        if let Some(other) = db.get_other_face_by_printed_ref(&printed_ref) {
+            faces.push(other);
+        }
+    }
+    faces
+}
+
+fn card_rules_faces(rules: &CardRules) -> Vec<&CardFace> {
+    crate::database::synthesis::layout_faces(&rules.layout)
+}
+
+fn tiny_leaders_category_banned(face: &CardFace) -> bool {
+    let text = face
+        .oracle_text
+        .as_deref()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    face.card_type.subtypes.iter().any(|subtype| {
+        subtype.eq_ignore_ascii_case("Conspiracy") || subtype.eq_ignore_ascii_case("Attraction")
+    }) || text.contains("playing for ante")
+        || text.contains("sticker")
+        || text.contains("attraction")
+}
+
+fn name_in_list(name: &str, list: &[&str]) -> bool {
+    list.iter().any(|banned| names_match(name, banned))
+}
+
+fn names_match(a: &str, b: &str) -> bool {
+    fn normalize(raw: &str) -> String {
+        raw.chars()
+            .map(|c| match c {
+                '\u{2019}' => '\'',
+                _ => c,
+            })
+            .flat_map(|c| c.to_lowercase())
+            .collect()
+    }
+    normalize(a) == normalize(b)
+}
+
 fn evaluate_selected_format_summary(
     db: &CardDatabase,
     request: &DeckCompatibilityRequest,
@@ -770,6 +1160,7 @@ fn evaluate_selected_format_summary(
             },
             100,
         ),
+        GameFormat::TinyLeaders => quick_tiny_leaders_check(db, request),
         GameFormat::Brawl | GameFormat::HistoricBrawl => quick_brawl_check(
             db,
             request,
@@ -1112,6 +1503,13 @@ fn evaluate_selected_format(
                 format.legality_format().unwrap(),
                 format.label(),
             );
+            if !check.compatible {
+                reasons.extend(check.reasons);
+            }
+            check.compatible
+        }
+        GameFormat::TinyLeaders => {
+            let check = evaluate_tiny_leaders(db, request, unknown_cards);
             if !check.compatible {
                 reasons.extend(check.reasons);
             }
@@ -1844,6 +2242,114 @@ mod tests {
         deck
     }
 
+    fn tiny_leaders_test_db_json() -> String {
+        serde_json::json!({
+            "white tiny leader": {
+                "name": "White Tiny Leader",
+                "mana_cost": { "type": "Cost", "shards": [], "generic": 2 },
+                "card_type": { "supertypes": ["Legendary"], "core_types": ["Creature"], "subtypes": [] },
+                "power": null,
+                "toughness": null,
+                "loyalty": null,
+                "defense": null,
+                "oracle_text": null,
+                "non_ability_text": null,
+                "flavor_name": null,
+                "keywords": [],
+                "abilities": [],
+                "triggers": [],
+                "static_abilities": [],
+                "replacements": [],
+                "color_override": null,
+                "color_identity": ["White"],
+                "scryfall_oracle_id": null,
+                "legalities": { "commander": "legal" }
+            },
+            "ajani, nacatl pariah": {
+                "name": "Ajani, Nacatl Pariah",
+                "mana_cost": { "type": "Cost", "shards": [], "generic": 2 },
+                "card_type": { "supertypes": ["Legendary"], "core_types": ["Planeswalker"], "subtypes": ["Ajani"] },
+                "power": null,
+                "toughness": null,
+                "loyalty": "3",
+                "defense": null,
+                "oracle_text": null,
+                "non_ability_text": null,
+                "flavor_name": null,
+                "keywords": [],
+                "abilities": [],
+                "triggers": [],
+                "static_abilities": [],
+                "replacements": [],
+                "color_override": null,
+                "color_identity": ["White"],
+                "scryfall_oracle_id": null,
+                "legalities": { "commander": "legal" }
+            },
+            "plains": {
+                "name": "Plains",
+                "mana_cost": { "type": "NoCost" },
+                "card_type": { "supertypes": ["Basic"], "core_types": ["Land"], "subtypes": ["Plains"] },
+                "power": null,
+                "toughness": null,
+                "loyalty": null,
+                "defense": null,
+                "oracle_text": null,
+                "non_ability_text": null,
+                "flavor_name": null,
+                "keywords": [],
+                "abilities": [],
+                "triggers": [],
+                "static_abilities": [],
+                "replacements": [],
+                "color_override": null,
+                "scryfall_oracle_id": null,
+                "legalities": { "commander": "legal" }
+            },
+            "big spell": {
+                "name": "Big Spell",
+                "mana_cost": { "type": "Cost", "shards": [], "generic": 4 },
+                "card_type": { "supertypes": [], "core_types": ["Sorcery"], "subtypes": [] },
+                "power": null,
+                "toughness": null,
+                "loyalty": null,
+                "defense": null,
+                "oracle_text": null,
+                "non_ability_text": null,
+                "flavor_name": null,
+                "keywords": [],
+                "abilities": [],
+                "triggers": [],
+                "static_abilities": [],
+                "replacements": [],
+                "color_override": null,
+                "scryfall_oracle_id": null,
+                "legalities": { "commander": "legal" }
+            },
+            "sol ring": {
+                "name": "Sol Ring",
+                "mana_cost": { "type": "Cost", "shards": [], "generic": 1 },
+                "card_type": { "supertypes": [], "core_types": ["Artifact"], "subtypes": [] },
+                "power": null,
+                "toughness": null,
+                "loyalty": null,
+                "defense": null,
+                "oracle_text": null,
+                "non_ability_text": null,
+                "flavor_name": null,
+                "keywords": [],
+                "abilities": [],
+                "triggers": [],
+                "static_abilities": [],
+                "replacements": [],
+                "color_override": null,
+                "scryfall_oracle_id": null,
+                "legalities": { "commander": "legal" }
+            }
+        })
+        .to_string()
+    }
+
     #[test]
     fn standard_legal_deck_passes() {
         let db = CardDatabase::from_json_str(&test_db_json()).unwrap();
@@ -2449,6 +2955,77 @@ mod tests {
             .selected_format_reasons
             .iter()
             .any(|r| r.contains("exactly 60 cards")));
+    }
+
+    #[test]
+    fn tiny_leaders_valid_deck_passes() {
+        let db = CardDatabase::from_json_str(&tiny_leaders_test_db_json()).unwrap();
+        let request = DeckCompatibilityRequest {
+            main_deck: expand("Plains", 49),
+            sideboard: expand("Plains", 10),
+            commander: vec!["White Tiny Leader".to_string()],
+            selected_format: Some(GameFormat::TinyLeaders),
+            selected_match_type: None,
+            summary_only: false,
+        };
+
+        let result = evaluate_deck_compatibility(&db, &request);
+
+        assert_eq!(
+            result.selected_format_compatible,
+            Some(true),
+            "{:?}",
+            result.selected_format_reasons
+        );
+    }
+
+    #[test]
+    fn tiny_leaders_rejects_cost_identity_and_deck_ban() {
+        let db = CardDatabase::from_json_str(&tiny_leaders_test_db_json()).unwrap();
+        let mut main = expand("Plains", 47);
+        main.push("Big Spell".to_string());
+        main.push("Sol Ring".to_string());
+        let request = DeckCompatibilityRequest {
+            main_deck: main,
+            sideboard: Vec::new(),
+            commander: vec!["White Tiny Leader".to_string()],
+            selected_format: Some(GameFormat::TinyLeaders),
+            selected_match_type: None,
+            summary_only: false,
+        };
+
+        let result = evaluate_deck_compatibility(&db, &request);
+
+        assert_eq!(result.selected_format_compatible, Some(false));
+        assert!(result
+            .selected_format_reasons
+            .iter()
+            .any(|r| r.contains("Tiny cost identity") && r.contains("Big Spell")));
+        assert!(result
+            .selected_format_reasons
+            .iter()
+            .any(|r| r.contains("Banned in Tiny Leaders") && r.contains("Sol Ring")));
+    }
+
+    #[test]
+    fn tiny_leaders_rejects_commander_only_ban() {
+        let db = CardDatabase::from_json_str(&tiny_leaders_test_db_json()).unwrap();
+        let request = DeckCompatibilityRequest {
+            main_deck: expand("Plains", 49),
+            sideboard: Vec::new(),
+            commander: vec!["Ajani, Nacatl Pariah".to_string()],
+            selected_format: Some(GameFormat::TinyLeaders),
+            selected_match_type: None,
+            summary_only: false,
+        };
+
+        let result = evaluate_deck_compatibility(&db, &request);
+
+        assert_eq!(result.selected_format_compatible, Some(false));
+        assert!(result
+            .selected_format_reasons
+            .iter()
+            .any(|r| r.contains("Banned as Tiny Leader") && r.contains("Ajani")));
     }
 
     #[test]

@@ -191,7 +191,7 @@ fn check_actor_authorization(
         return Ok(());
     }
     // CR 103.5: For simultaneous-decision states (MulliganDecision,
-    // MulliganBottomCards), authorize against the full pending set so any
+    // MulliganBottomCards, OpeningHandBottomCards), authorize against the full pending set so any
     // pending player may submit in any order. Falls back to single-player
     // semantics for every other variant.
     let authorized = turn_control::authorized_submitters(state);
@@ -2546,6 +2546,12 @@ fn apply_action(
         (WaitingFor::MulliganBottomCards { .. }, GameAction::SelectCards { cards }) => {
             // CR 103.5: `actor` is already authorized as a member of `pending`.
             mulligan::handle_mulligan_bottom(state, actor, cards, &mut events)
+                .map_err(EngineError::InvalidAction)?
+        }
+        (WaitingFor::OpeningHandBottomCards { .. }, GameAction::SelectCards { cards }) => {
+            // TL:R 906.6a/e: `actor` is already authorized as a member of
+            // `pending`; no normal mulligan actions are available in this state.
+            mulligan::handle_opening_hand_bottom(state, actor, cards, &mut events)
                 .map_err(EngineError::InvalidAction)?
         }
         (WaitingFor::DeclareAttackers { player, .. }, GameAction::DeclareAttackers { attacks }) => {

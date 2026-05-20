@@ -34,11 +34,13 @@ const CARD_TYPES = [
   "Planeswalker",
 ];
 
-const SCRYFALL_FORMAT_OVERRIDES: Partial<Record<GameFormat, string>> = {
+const SCRYFALL_FORMAT_OVERRIDES: Partial<Record<GameFormat, string | null>> = {
   DuelCommander: "duel",
+  TinyLeaders: null,
 };
 
-function scryfallFormatSlug(format: GameFormat): string {
+function scryfallFormatSlug(format: GameFormat): string | undefined {
+  if (SCRYFALL_FORMAT_OVERRIDES[format] === null) return undefined;
   return SCRYFALL_FORMAT_OVERRIDES[format] ?? format.toLowerCase();
 }
 

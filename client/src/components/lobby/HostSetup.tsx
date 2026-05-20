@@ -353,7 +353,7 @@ export function HostSetup({
             )}
 
             {/* Commander damage threshold (Commander only) */}
-            {formatConfig.command_zone && (
+            {formatConfig.commander_damage_threshold != null && (
               <div className="flex items-center justify-between">
                 <span className="text-xs text-gray-400">Commander Damage</span>
                 <input
