@@ -13532,6 +13532,15 @@ fn strip_temporal_suffix(text: &str) -> (&str, Option<DelayedTriggerCondition>) 
                 phase: Phase::Upkeep,
             },
         ),
+        // CR 603.7a: "the next turn's upkeep" is the natural-language variant
+        // of "the next upkeep" — both reference the very next upkeep step that
+        // occurs (Arcane Denial, Bag of Holding family; ~15 cards).
+        (
+            " at the beginning of the next turn's upkeep",
+            DelayedTriggerCondition::AtNextPhase {
+                phase: Phase::Upkeep,
+            },
+        ),
         (
             " at end of combat",
             DelayedTriggerCondition::AtNextPhase {
@@ -21966,6 +21975,23 @@ mod tests {
         assert_eq!(
             cond,
             Some(DelayedTriggerCondition::AtNextPhase { phase: Phase::End })
+        );
+    }
+
+    /// CR 603.7a: #638 Arcane Denial — "the next turn's upkeep" is the
+    /// natural-language equivalent of "the next upkeep" and must produce the
+    /// same `AtNextPhase { Upkeep }` delayed trigger. Covers the ~15-card
+    /// class (Arcane Denial + Bag of Holding artifact family).
+    #[test]
+    fn strip_temporal_suffix_next_turns_upkeep() {
+        let (text, cond) =
+            strip_temporal_suffix("you draw a card at the beginning of the next turn's upkeep");
+        assert_eq!(text, "you draw a card");
+        assert_eq!(
+            cond,
+            Some(DelayedTriggerCondition::AtNextPhase {
+                phase: Phase::Upkeep,
+            })
         );
     }
 
