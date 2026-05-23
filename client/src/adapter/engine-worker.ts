@@ -27,23 +27,10 @@ import init, {
   set_multiplayer_mode,
   resolve_all,
   estimate_bracket_for_deck,
-  // TEMPORARY (Phase 0 memory diagnostics) — remove together with the engine export.
-  engine_memory_report,
 } from "@wasm/engine";
 
 import type { GameAction } from "./types";
 import type { BracketDeckRequest } from "../types/bracketEstimate";
-
-// TEMPORARY (Phase 0 memory diagnostics): log this worker's WASM linear-memory
-// footprint + state sizes so the card_face_registry scoping win is measurable
-// in-browser (worker console). Remove together with the engine export.
-function logMemoryReport(label: string): void {
-  try {
-    console.log(`[mem] ${label}`, engine_memory_report());
-  } catch {
-    // Export absent (older build) — diagnostics only, never fatal.
-  }
-}
 
 // ── Message Protocol ─────────────────────────────────────────────────────
 
@@ -144,7 +131,6 @@ self.onmessage = async (e: MessageEvent<EngineRequest>) => {
         const text = await resp.text();
         const count = load_card_database(text);
         cardDbLoaded = true;
-        logMemoryReport("after loadCardDbFromUrl");
         result(msg.id, count);
         break;
       }
@@ -193,7 +179,6 @@ self.onmessage = async (e: MessageEvent<EngineRequest>) => {
           );
           break;
         }
-        logMemoryReport("after initializeGame");
         result(msg.id, {
           events: gameResult.events ?? [],
           log_entries: gameResult.log_entries ?? [],

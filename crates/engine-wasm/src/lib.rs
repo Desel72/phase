@@ -122,49 +122,6 @@ fn with_state<R>(f: impl FnOnce(&GameState) -> R) -> Result<R, JsValue> {
     })
 }
 
-// TEMPORARY: memory diagnostics, remove after Phase 0 measurement.
-/// Reports the WASM linear-memory footprint plus the sizes of the largest
-/// `#[serde(skip)]` runtime tables, so the browser can correlate a
-/// memory-exhaustion trap at `initialize_game` with the registry/name-list
-/// allocation spike. Reads the current `GAME_STATE` without disturbing it
-/// (take/set, falling back to zero counts when no game is loaded).
-#[cfg(target_arch = "wasm32")]
-#[wasm_bindgen]
-pub fn engine_memory_report() -> JsValue {
-    #[derive(Serialize)]
-    #[serde(rename_all = "camelCase")]
-    struct MemoryReport {
-        linear_memory_bytes: f64,
-        card_face_registry_len: usize,
-        all_card_names_len: usize,
-        objects_len: usize,
-    }
-
-    // CR n/a: pure diagnostics. `memory_size(0)` is the page count of linear
-    // memory 0; each WASM page is 64 KiB (65536 bytes).
-    let linear_memory_bytes = (core::arch::wasm32::memory_size(0) as f64) * 65536.0;
-
-    let (card_face_registry_len, all_card_names_len, objects_len) = GAME_STATE.with(|cell| {
-        let state = cell.take();
-        let counts = state.as_ref().map_or((0, 0, 0), |s| {
-            (
-                s.card_face_registry.len(),
-                s.all_card_names.len(),
-                s.objects.len(),
-            )
-        });
-        cell.set(state);
-        counts
-    });
-
-    to_js(&MemoryReport {
-        linear_memory_bytes,
-        card_face_registry_len,
-        all_card_names_len,
-        objects_len,
-    })
-}
-
 thread_local! {
     /// Last panic message + location, captured by our panic hook below.
     /// JS reads this via `take_last_panic_message` after a WASM trap so the
