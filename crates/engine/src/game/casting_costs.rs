@@ -644,6 +644,7 @@ pub(crate) fn handle_return_to_hand_for_cost(
 
 /// CR 118.3 + CR 122.1 + CR 601.2b: Complete remove-counter-as-cost after
 /// player selection.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn handle_remove_counter_for_cost(
     state: &mut GameState,
     player: PlayerId,

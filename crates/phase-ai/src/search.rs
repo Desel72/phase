@@ -785,6 +785,7 @@ fn fallback_action(state: &GameState) -> Option<GameAction> {
         | WaitingFor::BeholdForCost { .. }
         | WaitingFor::TapCreaturesForSpellCost { .. }
         | WaitingFor::ExileForCost { .. }
+        | WaitingFor::RemoveCounterForCost { .. }
         | WaitingFor::CollectEvidenceChoice { .. }
         | WaitingFor::HarmonizeTapChoice { .. } => {
             // These are all pending-cast states — the has_pending_cast guard
