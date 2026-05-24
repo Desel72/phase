@@ -2537,8 +2537,15 @@ pub(super) fn pay_and_push_adventure(
     // CR 107.4f + CR 601.2f: Pause for interactive Phyrexian choice when the cost has
     // at least one shard with both mana and 2-life viable. The resume handler calls
     // `finalize_mana_payment_with_phyrexian_choices` which finishes the cast.
-    if let Some(waiting) = maybe_pause_for_phyrexian_choice(state, player, object_id, cost, events)
-    {
+    if let Some(waiting) = maybe_pause_for_phyrexian_choice(
+        state,
+        player,
+        object_id,
+        cost,
+        events,
+        None,
+        &HashSet::new(),
+    ) {
         let mut pending = PendingCast::new(object_id, card_id, ability, cost.clone());
         pending.casting_variant = casting_variant;
         pending.cast_timing_permission = cast_timing_permission;
@@ -3802,6 +3809,16 @@ pub fn max_x_value(
     cost: &ManaCost,
     object_id: Option<ObjectId>,
 ) -> u32 {
+    max_x_value_excluding(state, player, cost, object_id, &HashSet::new())
+}
+
+pub(super) fn max_x_value_excluding(
+    state: &GameState,
+    player: PlayerId,
+    cost: &ManaCost,
+    object_id: Option<ObjectId>,
+    excluded_sources: &HashSet<ObjectId>,
+) -> u32 {
     let ManaCost::Cost { shards, generic } = cost else {
         return 0;
     };
@@ -3864,6 +3881,7 @@ pub fn max_x_value(
     let capacity: u32 = state
         .battlefield
         .iter()
+        .filter(|id| !excluded_sources.contains(id))
         .map(|&id| {
             let mana = mana_sources::max_mana_yield(state, id, player);
             let tap = pred
@@ -3902,7 +3920,20 @@ pub fn enter_payment_step(
     if let Some(pending) = state.pending_cast.as_ref() {
         if pending.ability.chosen_x.is_none() && cost_has_x(&pending.cost) {
             let min = pending.ability.min_x_value;
-            let max = max_x_value(state, player, &pending.cost, Some(pending.object_id));
+            let excluded_sources = pending
+                .activation_cost
+                .as_ref()
+                .map(|cost| {
+                    super::casting::ability_mana_payment_excluded_sources(cost, pending.object_id)
+                })
+                .unwrap_or_default();
+            let max = max_x_value_excluding(
+                state,
+                player,
+                &pending.cost,
+                Some(pending.object_id),
+                &excluded_sources,
+            );
             if min > max {
                 let pending_for_cancel = pending.clone();
                 state.pending_cast = None;
@@ -3962,11 +3993,45 @@ pub fn finalize_mana_payment(
     // `PendingCast` stays in `state.pending_cast` across the pause — the resume handler
     // in `engine.rs` calls `finalize_mana_payment_with_phyrexian_choices`.
     if let Some(pending_ref) = state.pending_cast.as_ref() {
-        let cost = pending_ref.cost.clone();
+        let mana_cost = pending_ref.cost.clone();
         let source_id = pending_ref.object_id;
-        if let Some(waiting) =
-            maybe_pause_for_phyrexian_choice(state, player, source_id, &cost, events)
-        {
+        if pending_ref.activation_ability_index.is_some() {
+            let excluded_sources = pending_ref
+                .activation_cost
+                .as_ref()
+                .map(|activation_cost| {
+                    super::casting::ability_mana_payment_excluded_sources(
+                        activation_cost,
+                        source_id,
+                    )
+                })
+                .unwrap_or_default();
+            let (source_types, source_subtypes) =
+                super::casting::activation_source_types(state, source_id);
+            let activation_ctx = PaymentContext::Activation {
+                source_types: &source_types,
+                source_subtypes: &source_subtypes,
+            };
+            if let Some(waiting) = maybe_pause_for_phyrexian_choice(
+                state,
+                player,
+                source_id,
+                &mana_cost,
+                events,
+                Some(&activation_ctx),
+                &excluded_sources,
+            ) {
+                return Ok(waiting);
+            }
+        } else if let Some(waiting) = maybe_pause_for_phyrexian_choice(
+            state,
+            player,
+            source_id,
+            &mana_cost,
+            events,
+            None,
+            &HashSet::new(),
+        ) {
             return Ok(waiting);
         }
     }
@@ -3977,7 +4042,21 @@ pub fn finalize_mana_payment(
         .ok_or_else(|| EngineError::InvalidAction("No pending cast to finalize".to_string()))?;
 
     if let Some(ability_index) = pending.activation_ability_index {
-        super::casting::pay_mana_cost(state, player, pending.object_id, &pending.cost, events)?;
+        let excluded_sources = pending
+            .activation_cost
+            .as_ref()
+            .map(|cost| {
+                super::casting::ability_mana_payment_excluded_sources(cost, pending.object_id)
+            })
+            .unwrap_or_default();
+        super::casting::pay_ability_mana_cost_excluding(
+            state,
+            player,
+            pending.object_id,
+            &pending.cost,
+            events,
+            &excluded_sources,
+        )?;
         return push_activated_ability_to_stack(
             state,
             player,
@@ -4112,13 +4191,21 @@ pub fn finalize_mana_payment_with_phyrexian_choices(
         .ok_or_else(|| EngineError::InvalidAction("No pending cast to finalize".to_string()))?;
 
     if let Some(ability_index) = pending.activation_ability_index {
-        super::casting::pay_mana_cost_with_choices(
+        let excluded_sources = pending
+            .activation_cost
+            .as_ref()
+            .map(|cost| {
+                super::casting::ability_mana_payment_excluded_sources(cost, pending.object_id)
+            })
+            .unwrap_or_default();
+        super::casting::pay_ability_mana_cost_with_choices_excluding(
             state,
             player,
             pending.object_id,
             &pending.cost,
             Some(phyrexian_choices),
             events,
+            &excluded_sources,
         )?;
         return push_activated_ability_to_stack(
             state,
@@ -4239,6 +4326,8 @@ pub(super) fn maybe_pause_for_phyrexian_choice(
     source_id: ObjectId,
     cost: &crate::types::mana::ManaCost,
     events: &mut Vec<GameEvent>,
+    payment_context: Option<&PaymentContext<'_>>,
+    excluded_sources: &HashSet<ObjectId>,
 ) -> Option<WaitingFor> {
     // CR 107.4f: Fast reject — pause only when cost has intrinsic Phyrexian
     // shards OR the player has a K'rrik-style grant whose color appears in the
@@ -4281,15 +4370,35 @@ pub(super) fn maybe_pause_for_phyrexian_choice(
     // CR 601.2h + CR 605: Auto-tap mana sources before shard-options computation so
     // the simulation reflects the actual post-tap pool.
     let events_before = events.len();
-    auto_tap_mana_sources(state, player, cost, events, Some(source_id));
+    if payment_context.is_none() && excluded_sources.is_empty() {
+        auto_tap_mana_sources(state, player, cost, events, Some(source_id));
+    } else {
+        auto_tap_mana_sources_with_context_excluding(
+            state,
+            player,
+            cost,
+            events,
+            Some(source_id),
+            payment_context,
+            excluded_sources,
+        );
+    }
     // CR 605.4a: Resolve coupled `TapsForMana` triggered mana abilities inline so
     // the bonus mana is in the pool before Phyrexian shard options are computed.
     super::triggers::resolve_tap_mana_triggers_inline(state, events, events_before);
 
-    let spell_meta = super::casting::build_spell_meta(state, player, source_id);
+    let spell_meta = payment_context
+        .is_none()
+        .then(|| super::casting::build_spell_meta(state, player, source_id))
+        .flatten();
     let spell_ctx = spell_meta.as_ref().map(PaymentContext::Spell);
-    let any_color =
-        super::casting::player_can_spend_as_any_color_for_spell(state, player, source_id);
+    let effective_payment_context = payment_context.or(spell_ctx.as_ref());
+    let any_color = super::casting::player_can_spend_as_any_color_for_payment(
+        state,
+        player,
+        source_id,
+        effective_payment_context,
+    );
     // CR 107.4f + CR 118.1: Single-authority permission bundle — passes
     // `life_colors` through to `compute_phyrexian_shards` so K'rrik-promoted
     // shards surface in the pause UI.
@@ -4301,7 +4410,7 @@ pub(super) fn maybe_pause_for_phyrexian_choice(
         mana_payment::compute_phyrexian_shards(
             &player_data.mana_pool,
             cost,
-            spell_ctx.as_ref(),
+            effective_payment_context,
             permissions,
         )
     };
