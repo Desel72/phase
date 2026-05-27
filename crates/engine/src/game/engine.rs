@@ -4104,22 +4104,39 @@ pub(super) fn begin_pending_trigger_target_selection(
     // CR 700.2b: Modal trigger — prompt for mode selection before stack.
     if let Some(ref modal) = trigger.modal {
         if !trigger.mode_abilities.is_empty() {
+            let player = trigger.controller;
+            let source_id = trigger.source_id;
+            let mode_abilities = trigger.mode_abilities.clone();
+            let trigger_event = trigger.trigger_event.clone();
+            let trigger_events = if state.pending_trigger_event_batch.is_empty() {
+                trigger_event.iter().cloned().collect::<Vec<_>>()
+            } else {
+                state.pending_trigger_event_batch.clone()
+            };
+            let subject_match_count = trigger.subject_match_count;
             let modal = modal_choice_for_player(
                 state,
-                trigger.controller,
-                trigger.source_id,
+                player,
+                source_id,
                 modal,
                 &crate::types::ability::SpellContext::default(),
             );
-            let mut unavailable_modes = compute_unavailable_modes(state, trigger.source_id, &modal);
+            let mut unavailable_modes = compute_unavailable_modes(state, source_id, &modal);
+            let context_snapshot = super::triggers::push_trigger_event_context(
+                state,
+                trigger_event.as_ref(),
+                &trigger_events,
+                subject_match_count,
+            );
             super::ability_utils::filter_modes_by_target_legality(
                 state,
-                trigger.source_id,
-                trigger.controller,
-                &trigger.mode_abilities,
+                source_id,
+                player,
+                &mode_abilities,
                 &modal,
                 &mut unavailable_modes,
             );
+            super::triggers::restore_trigger_event_context(state, context_snapshot);
 
             // CR 700.2b: All modes unavailable (previously chosen OR no legal
             // targets) — ability cannot be put on the stack. Clear pending
@@ -4130,10 +4147,10 @@ pub(super) fn begin_pending_trigger_target_selection(
             }
 
             return Ok(Some(WaitingFor::AbilityModeChoice {
-                player: trigger.controller,
+                player,
                 modal,
-                source_id: trigger.source_id,
-                mode_abilities: trigger.mode_abilities.clone(),
+                source_id,
+                mode_abilities,
                 is_activated: false,
                 ability_index: None,
                 ability_cost: None,
@@ -4142,26 +4159,42 @@ pub(super) fn begin_pending_trigger_target_selection(
         }
     }
 
-    let target_slots = build_target_slots(state, &trigger.ability)?;
-    if target_slots.is_empty() {
-        return Ok(None);
-    }
-
+    let ability = trigger.ability.clone();
     let player = trigger.controller;
+    let source_id = trigger.source_id;
     let target_constraints = trigger.target_constraints.clone();
-    let selection = begin_target_selection_for_ability(
+    let description = trigger.description.clone();
+    let trigger_event = trigger.trigger_event.clone();
+    let trigger_events = if state.pending_trigger_event_batch.is_empty() {
+        trigger_event.iter().cloned().collect::<Vec<_>>()
+    } else {
+        state.pending_trigger_event_batch.clone()
+    };
+    let subject_match_count = trigger.subject_match_count;
+    let context_snapshot = super::triggers::push_trigger_event_context(
         state,
-        &trigger.ability,
-        &target_slots,
-        &target_constraints,
-    )?;
+        trigger_event.as_ref(),
+        &trigger_events,
+        subject_match_count,
+    );
+    let selection_result = build_target_slots(state, &ability).and_then(|target_slots| {
+        if target_slots.is_empty() {
+            return Ok(None);
+        }
+        begin_target_selection_for_ability(state, &ability, &target_slots, &target_constraints)
+            .map(|selection| Some((target_slots, selection)))
+    });
+    super::triggers::restore_trigger_event_context(state, context_snapshot);
+    let Some((target_slots, selection)) = selection_result? else {
+        return Ok(None);
+    };
     Ok(Some(WaitingFor::TriggerTargetSelection {
         player,
         target_slots,
         target_constraints,
         selection,
-        source_id: Some(trigger.source_id),
-        description: trigger.description.clone(),
+        source_id: Some(source_id),
+        description,
     }))
 }
 

@@ -185,10 +185,14 @@ impl<'a> FilterContext<'a> {
 }
 
 fn scoped_player_or_controller(
+    state: &GameState,
     ability: Option<&ResolvedAbility>,
     source_controller: Option<PlayerId>,
 ) -> Option<PlayerId> {
-    ability.and_then(|a| a.scoped_player).or(source_controller)
+    ability
+        .and_then(|a| a.scoped_player)
+        .or_else(|| crate::game::quantity::triggering_event_player(state))
+        .or(source_controller)
 }
 
 fn parent_target_controller_player(
@@ -214,7 +218,9 @@ fn controller_ref_player(
     match controller {
         ControllerRef::You => source_controller,
         ControllerRef::Opponent => None,
-        ControllerRef::ScopedPlayer => scoped_player_or_controller(ability, source_controller),
+        ControllerRef::ScopedPlayer => {
+            scoped_player_or_controller(state, ability, source_controller)
+        }
         ControllerRef::TargetPlayer => ability.and_then(|a| {
             a.targets.iter().find_map(|t| match t {
                 TargetRef::Player(pid) => Some(*pid),
@@ -538,7 +544,7 @@ fn filter_inner_for_object(
                         }
                     }
                     ControllerRef::ScopedPlayer => {
-                        match scoped_player_or_controller(ability, source_controller) {
+                        match scoped_player_or_controller(state, ability, source_controller) {
                             Some(pid) if pid == obj.controller => {}
                             _ => return false,
                         }
@@ -835,7 +841,7 @@ fn zone_change_filter_inner(
                         return false;
                     }
                     ControllerRef::ScopedPlayer => {
-                        match scoped_player_or_controller(ability, source_controller) {
+                        match scoped_player_or_controller(state, ability, source_controller) {
                             Some(pid) if pid == record.controller => {}
                             _ => return false,
                         }
@@ -1979,7 +1985,7 @@ fn matches_filter_prop(
                 source.controller.is_some() && source.controller != Some(obj.owner)
             }
             ControllerRef::ScopedPlayer => {
-                scoped_player_or_controller(source.ability, source.controller)
+                scoped_player_or_controller(state, source.ability, source.controller)
                     .is_some_and(|pid| pid == obj.owner)
             }
             // CR 109.5: Ownership relative to a chosen target player.
@@ -2491,7 +2497,7 @@ fn zone_change_record_matches_property(
                 source.controller.is_some() && source.controller != Some(record.owner)
             }
             ControllerRef::ScopedPlayer => {
-                scoped_player_or_controller(source.ability, source.controller)
+                scoped_player_or_controller(state, source.ability, source.controller)
                     .is_some_and(|pid| pid == record.owner)
             }
             // CR 109.5: Ownership relative to a chosen target player.
@@ -2680,7 +2686,7 @@ fn attachment_controller_matches(
             .controller
             .is_some_and(|controller| controller != attachment_controller),
         Some(ControllerRef::ScopedPlayer) => {
-            scoped_player_or_controller(source.ability, source.controller)
+            scoped_player_or_controller(state, source.ability, source.controller)
                 .is_some_and(|pid| pid == attachment_controller)
         }
         Some(ControllerRef::TargetPlayer) => source
