@@ -47,6 +47,7 @@ mod dralnu_dealt_damage_sacrifice;
 mod dredgers_insight_mill_from_among;
 mod elemental_spectacle_regression;
 mod elusive_otter_repro;
+mod embiggen_typeline_pump;
 mod emissary_green;
 mod emrakul_control_turn_crash;
 #[cfg(feature = "proptest")]

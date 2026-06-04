@@ -3071,6 +3071,10 @@ pub enum QuantityRef {
     /// "enchanted/equipped creature gets +N/+N for each word in its name" by
     /// binding to the affected object rather than the Aura or Equipment source.
     ObjectNameWordCount { scope: ObjectScope },
+    /// CR 205.4a + CR 205.2a + CR 205.3: Number of typeline components on an
+    /// object (supertypes + core card types + subtypes). Embiggen: "+1/+1 for
+    /// each supertype, card type, and subtype it has."
+    ObjectTypelineComponentCount { scope: ObjectScope },
     /// CR 107.4 + CR 202.1: Count colored mana symbols in an object's mana
     /// cost. Hybrid, monocolored hybrid, Phyrexian, hybrid Phyrexian, and
     /// colorless hybrid symbols count when they contain `color`, via

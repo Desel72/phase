@@ -162,6 +162,9 @@ pub(crate) fn quantity_expr_uses_recipient(expr: &QuantityExpr) -> bool {
             | QuantityRef::ObjectNameWordCount {
                 scope: ObjectScope::Recipient,
             }
+            | QuantityRef::ObjectTypelineComponentCount {
+                scope: ObjectScope::Recipient,
+            }
             | QuantityRef::Power {
                 scope: ObjectScope::Recipient,
             }
@@ -275,6 +278,7 @@ fn quantity_ref_uses_object_count(qty: &QuantityRef) -> bool {
         | QuantityRef::ObjectManaValue { .. }
         | QuantityRef::ObjectColorCount { .. }
         | QuantityRef::ObjectNameWordCount { .. }
+        | QuantityRef::ObjectTypelineComponentCount { .. }
         | QuantityRef::ManaSymbolsInManaCost { .. }
         | QuantityRef::SelfManaValue
         | QuantityRef::TargetZoneCardCount { .. }
@@ -442,6 +446,7 @@ fn entered_object_perturbs_quantity_ref(
         | QuantityRef::ObjectManaValue { .. }
         | QuantityRef::ObjectColorCount { .. }
         | QuantityRef::ObjectNameWordCount { .. }
+        | QuantityRef::ObjectTypelineComponentCount { .. }
         | QuantityRef::ManaSymbolsInManaCost { .. }
         | QuantityRef::SelfManaValue
         | QuantityRef::TargetZoneCardCount { .. }
@@ -1288,6 +1293,9 @@ fn resolve_ref(
         }
         QuantityRef::ObjectNameWordCount { scope } => {
             resolve_object_name_word_count(state, *scope, ctx, targets)
+        }
+        QuantityRef::ObjectTypelineComponentCount { scope } => {
+            resolve_object_typeline_component_count(state, *scope, ctx, targets)
         }
         QuantityRef::ManaSymbolsInManaCost { scope, color } => {
             resolve_mana_symbols_in_mana_cost(state, *scope, *color, ctx, targets)
@@ -2683,6 +2691,32 @@ fn resolve_object_name_word_count(
         .map(|obj| obj.name.as_str())
         .or_else(|| state.lki_cache.get(&object_id).map(|lki| lki.name.as_str()));
     name.map(|name| usize_to_i32_saturating(name.split_whitespace().count()))
+        .unwrap_or(0)
+}
+
+fn resolve_object_typeline_component_count(
+    state: &GameState,
+    scope: ObjectScope,
+    ctx: QuantityContext,
+    targets: &[TargetRef],
+) -> i32 {
+    let Some(object_id) = object_id_for_scope(state, scope, ctx, targets) else {
+        return 0;
+    };
+    if let Some(obj) = state.objects.get(&object_id) {
+        let ct = &obj.card_types;
+        return usize_to_i32_saturating(
+            ct.supertypes.len() + ct.core_types.len() + ct.subtypes.len(),
+        );
+    }
+    state
+        .lki_cache
+        .get(&object_id)
+        .map(|lki| {
+            usize_to_i32_saturating(
+                lki.supertypes.len() + lki.card_types.len() + lki.subtypes.len(),
+            )
+        })
         .unwrap_or(0)
 }
 
@@ -7275,6 +7309,62 @@ mod tests {
             },
         };
         assert_eq!(resolve_quantity(&state, &expr_t, PlayerId(0), source), 3);
+    }
+
+    #[test]
+    fn resolve_object_typeline_component_count_glistener_elf() {
+        use crate::types::ability::PtValue;
+        use crate::types::card_type::CoreType;
+
+        let mut state = GameState::new_two_player(42);
+        let source = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Embiggen".to_string(),
+            Zone::Stack,
+        );
+        let target = create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(0),
+            "Glistener Elf".to_string(),
+            Zone::Battlefield,
+        );
+        {
+            use crate::types::card_type::CardType;
+            let obj = state.objects.get_mut(&target).unwrap();
+            obj.card_types = CardType {
+                supertypes: vec![],
+                core_types: vec![CoreType::Creature],
+                subtypes: vec![
+                    "Phyrexian".to_string(),
+                    "Elf".to_string(),
+                    "Warrior".to_string(),
+                ],
+            };
+        }
+
+        let expr = QuantityExpr::Ref {
+            qty: QuantityRef::ObjectTypelineComponentCount {
+                scope: ObjectScope::Target,
+            },
+        };
+        let ability = ResolvedAbility::new(
+            Effect::Pump {
+                power: PtValue::Quantity(expr.clone()),
+                toughness: PtValue::Quantity(expr.clone()),
+                target: TargetFilter::Any,
+            },
+            vec![TargetRef::Object(target)],
+            source,
+            PlayerId(0),
+        );
+        assert_eq!(
+            resolve_quantity_with_targets(&state, &expr, &ability),
+            4,
+            "Creature + Phyrexian + Elf + Warrior = 4 typeline components"
+        );
     }
 
     #[test]

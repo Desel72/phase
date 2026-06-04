@@ -1824,6 +1824,7 @@ fn parse_for_each_clause_ref_with_they_controller(
         parse_counter_added_this_turn_for_each,
         parse_object_colors_for_each,
         parse_object_name_word_count_for_each,
+        parse_object_typeline_component_count_for_each,
         parse_mana_symbols_in_object_mana_cost_for_each,
         parse_distinct_card_types_in_zone,
         parse_foretold_cards_owned_in_exile,
@@ -2155,6 +2156,20 @@ fn parse_counter_added_target(input: &str) -> OracleResult<'_, TargetFilter> {
         ),
     ))
     .parse(rest)
+}
+
+/// CR 205.4a + CR 205.2a + CR 205.3: Parse "supertype, card type, and subtype
+/// <object> has" (Embiggen) into a scoped typeline-component count.
+fn parse_object_typeline_component_count_for_each(input: &str) -> OracleResult<'_, QuantityRef> {
+    let (rest, _) =
+        tag::<_, _, OracleError<'_>>("supertype, card type, and subtype ").parse(input)?;
+    let (rest, scope) = parse_object_typeline_scope(rest)?;
+    let (rest, _) = tag(" has").parse(rest)?;
+    Ok((rest, QuantityRef::ObjectTypelineComponentCount { scope }))
+}
+
+fn parse_object_typeline_scope(input: &str) -> OracleResult<'_, ObjectScope> {
+    alt((parse_object_color_of_scope, parse_object_possessive_scope)).parse(input)
 }
 
 /// CR 201.1 + CR 201.2: Parse
@@ -3274,6 +3289,19 @@ mod tests {
             q,
             QuantityRef::PartySize {
                 player: PlayerScope::Controller
+            }
+        );
+        assert_eq!(rest, "");
+    }
+
+    #[test]
+    fn test_parse_for_each_typeline_components_it_has() {
+        let (rest, q) =
+            parse_for_each("for each supertype, card type, and subtype it has").unwrap();
+        assert_eq!(
+            q,
+            QuantityRef::ObjectTypelineComponentCount {
+                scope: crate::types::ability::ObjectScope::Recipient,
             }
         );
         assert_eq!(rest, "");
