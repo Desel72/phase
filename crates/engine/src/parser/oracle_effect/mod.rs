@@ -16458,11 +16458,12 @@ fn constrain_filter_to_stack(filter: TargetFilter) -> TargetFilter {
     }
 }
 
-/// CR 115.7: Parse "change the target of [spell]" and "you may choose new targets for [spell]".
+/// CR 115.7: Parse "change the/a target of [spell]" and "you may choose new targets for [spell]".
 ///
-/// Covers two Oracle text patterns:
-/// - "change the target of [spell phrase]" → scope: `Single`
-/// - "you may choose new targets for [spell phrase]" → scope: `All`
+/// Covers Oracle text patterns:
+/// - "change the target of [spell phrase]" → scope: `Single` (CR 115.7a)
+/// - "change a target of [spell phrase]" → scope: `Single` (CR 115.7b — Spellskite, Phyresis)
+/// - "you may choose new targets for [spell phrase]" → scope: `All` (CR 115.7d)
 ///
 /// An optional trailing "to [target phrase]" sets `forced_to`.
 fn try_parse_change_targets(lower: &str) -> Option<Effect> {
@@ -16473,6 +16474,7 @@ fn try_parse_change_targets(lower: &str) -> Option<Effect> {
             RetargetScope::Single,
             tag::<_, _, E>("change the target of "),
         ),
+        value(RetargetScope::Single, tag("change a target of ")),
         value(RetargetScope::All, tag("you may choose new targets for ")),
     ))
     .parse(lower)
@@ -29227,6 +29229,19 @@ mod tests {
             }
             other => panic!("Expected Token effect in else_ability, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn change_targets_change_a_target_of_forced_to_self() {
+        let e = parse_effect("change a target of target spell or ability to ~");
+        let Effect::ChangeTargets {
+            scope, forced_to, ..
+        } = e
+        else {
+            panic!("Expected ChangeTargets, got {e:?}");
+        };
+        assert!(matches!(scope, RetargetScope::Single));
+        assert_eq!(forced_to, Some(TargetFilter::SelfRef));
     }
 
     #[test]
