@@ -3896,14 +3896,15 @@ fn validate_target_constraints(
                         )
                     }
                 };
-                // CR 202.3: combined mana value of the chosen object targets.
+                // CR 202.3 + CR 202.3e: combined mana value of the chosen object
+                // targets; on-stack spells include the announced X value.
                 let sum: i32 = targets
                     .iter()
                     .filter_map(|t| match t {
                         TargetRef::Object(id) => state
                             .objects
                             .get(id)
-                            .map(|o| o.mana_cost.mana_value() as i32),
+                            .map(|o| o.mana_cost.mana_value_with_x(o.zone, o.cost_x_paid) as i32),
                         TargetRef::Player(_) => None,
                     })
                     .sum();
