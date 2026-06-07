@@ -330,6 +330,8 @@ pub(crate) enum GraveyardGrantedKeywordKind {
     Flashback,
     Escape,
     Mayhem,
+    Scavenge,
+    Encore,
 }
 
 impl GraveyardGrantedKeywordKind {
@@ -345,6 +347,10 @@ impl GraveyardGrantedKeywordKind {
             GraveyardGrantedKeywordKind::Mayhem => {
                 keyword.kind() == crate::types::keywords::KeywordKind::Mayhem
             }
+            // CR 702.97 (Scavenge) / CR 702.141 (Encore): activated graveyard
+            // keywords share `KeywordKind::Unknown`, so match the variant directly.
+            GraveyardGrantedKeywordKind::Scavenge => matches!(keyword, Keyword::Scavenge(_)),
+            GraveyardGrantedKeywordKind::Encore => matches!(keyword, Keyword::Encore(_)),
         }
     }
 }

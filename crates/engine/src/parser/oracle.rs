@@ -594,6 +594,16 @@ fn parse_graveyard_keyword_continuation(
         rest.trim().trim_end_matches('.').trim().is_empty()
     }
 
+    fn parse_self_mana_cost_suffix(text: &str) -> Option<&str> {
+        let lower = text.to_lowercase();
+        let (_, rest) = nom_on_lower(text, &lower, |i| {
+            let (i, _) = alt((tag("that card's"), tag("the card's"), tag("its"))).parse(i)?;
+            let (i, _) = tag(" mana cost").parse(i)?;
+            Ok((i, ()))
+        })?;
+        Some(rest)
+    }
+
     let lower = text.to_lowercase();
 
     match kind {
@@ -601,18 +611,7 @@ fn parse_graveyard_keyword_continuation(
             let (_, rest) = nom_on_lower(text, &lower, |i| {
                 value((), tag("the flashback cost is equal to ")).parse(i)
             })?;
-            let rest_lower = rest.to_lowercase();
-            let (_, rest) = nom_on_lower(rest, &rest_lower, |i| {
-                value(
-                    (),
-                    alt((
-                        tag("that card's mana cost"),
-                        tag("the card's mana cost"),
-                        tag("its mana cost"),
-                    )),
-                )
-                .parse(i)
-            })?;
+            let rest = parse_self_mana_cost_suffix(rest)?;
             if !continuation_fully_consumed(rest) {
                 return None;
             }
@@ -624,17 +623,10 @@ fn parse_graveyard_keyword_continuation(
             let (_, rest) = nom_on_lower(text, &lower, |i| {
                 value((), tag("the escape cost is equal to ")).parse(i)
             })?;
+            let rest = parse_self_mana_cost_suffix(rest)?;
             let rest_lower = rest.to_lowercase();
             let (_, rest) = nom_on_lower(rest, &rest_lower, |i| {
-                value(
-                    (),
-                    alt((
-                        tag("that card's mana cost plus exile "),
-                        tag("the card's mana cost plus exile "),
-                        tag("its mana cost plus exile "),
-                    )),
-                )
-                .parse(i)
+                value((), tag(" plus exile ")).parse(i)
             })?;
             let (exile_count, rest) = parse_number(rest)?;
             let rest_lower = rest.to_lowercase();
@@ -657,22 +649,50 @@ fn parse_graveyard_keyword_continuation(
             let (_, rest) = nom_on_lower(text, &lower, |i| {
                 value((), tag("the mayhem cost is equal to ")).parse(i)
             })?;
-            let rest_lower = rest.to_lowercase();
-            let (_, rest) = nom_on_lower(rest, &rest_lower, |i| {
-                value(
-                    (),
-                    alt((
-                        tag("that card's mana cost"),
-                        tag("the card's mana cost"),
-                        tag("its mana cost"),
-                    )),
-                )
-                .parse(i)
-            })?;
+            let rest = parse_self_mana_cost_suffix(rest)?;
             if !continuation_fully_consumed(rest) {
                 return None;
             }
             Some(Keyword::Mayhem(ManaCost::SelfManaCost))
+        }
+        GraveyardGrantedKeywordKind::Scavenge => {
+            // CR 702.97a: "The scavenge cost is equal to its mana cost." (Varolz,
+            // the Scar-Striped; Young Deathclaws; The Cave of Skulls). Mirrors the
+            // Flashback continuation; cost resolves to the card's own mana cost.
+            let (_, rest) = nom_on_lower(text, &lower, |i| {
+                value(
+                    (),
+                    alt((
+                        tag("the scavenge cost is equal to "),
+                        tag("its scavenge cost is equal to "),
+                    )),
+                )
+                .parse(i)
+            })?;
+            let rest = parse_self_mana_cost_suffix(rest)?;
+            if !continuation_fully_consumed(rest) {
+                return None;
+            }
+            Some(Keyword::Scavenge(ManaCost::SelfManaCost))
+        }
+        GraveyardGrantedKeywordKind::Encore => {
+            // CR 702.141a: "Its encore cost is equal to its mana cost." (Wire
+            // Surgeons). Same shape as scavenge.
+            let (_, rest) = nom_on_lower(text, &lower, |i| {
+                value(
+                    (),
+                    alt((
+                        tag("its encore cost is equal to "),
+                        tag("the encore cost is equal to "),
+                    )),
+                )
+                .parse(i)
+            })?;
+            let rest = parse_self_mana_cost_suffix(rest)?;
+            if !continuation_fully_consumed(rest) {
+                return None;
+            }
+            Some(Keyword::Encore(ManaCost::SelfManaCost))
         }
     }
 }
@@ -12541,6 +12561,54 @@ mod tests {
             "missing mayhem grant: {:?}",
             static_def.modifications
         );
+    }
+
+    /// CR 702.97 / CR 702.141: Varolz (scavenge) and Wire Surgeons (encore)
+    /// grant an activated graveyard keyword to every matching card in the
+    /// controller's graveyard, with the cost equal to that card's mana cost.
+    #[test]
+    fn top_level_static_scavenge_and_encore_grants_stay_on_graveyard_cards() {
+        for (text, name, subtypes, expected) in [
+            (
+                "Each creature card in your graveyard has scavenge. The scavenge cost is equal to its mana cost.",
+                "Varolz, the Scar-Striped",
+                &["Troll", "Warrior"][..],
+                Keyword::Scavenge(ManaCost::SelfManaCost),
+            ),
+            (
+                "Each artifact creature card in your graveyard has encore. Its encore cost is equal to its mana cost.",
+                "Wire Surgeons",
+                &["Phyrexian", "Artificer"][..],
+                Keyword::Encore(ManaCost::SelfManaCost),
+            ),
+        ] {
+            let result = parse(text, name, &[], &["Creature"], subtypes);
+            assert_eq!(result.statics.len(), 1, "{name}: {:?}", result.statics);
+            let static_def = &result.statics[0];
+            let TargetFilter::Typed(tf) = static_def
+                .affected
+                .as_ref()
+                .expect("expected affected filter")
+            else {
+                panic!("{name}: expected typed affected filter");
+            };
+            assert!(
+                tf.properties.contains(&FilterProp::InZone {
+                    zone: Zone::Graveyard
+                }),
+                "{name}: missing graveyard filter: {:?}",
+                tf.properties
+            );
+            assert!(
+                static_def
+                    .modifications
+                    .contains(&ContinuousModification::AddKeyword {
+                        keyword: expected.clone()
+                    }),
+                "{name}: missing {expected:?} grant: {:?}",
+                static_def.modifications
+            );
+        }
     }
 
     #[test]

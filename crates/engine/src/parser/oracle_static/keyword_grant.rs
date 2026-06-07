@@ -46,6 +46,10 @@ pub(crate) fn try_parse_graveyard_keyword_grant_clause(
             value(GraveyardGrantedKeywordKind::Flashback, tag("flashback")),
             value(GraveyardGrantedKeywordKind::Escape, tag("escape")),
             value(GraveyardGrantedKeywordKind::Mayhem, tag("mayhem")),
+            // CR 702.97 / CR 702.141: Varolz, Young Deathclaws (scavenge);
+            // Wire Surgeons (encore) grant activated graveyard keywords.
+            value(GraveyardGrantedKeywordKind::Scavenge, tag("scavenge")),
+            value(GraveyardGrantedKeywordKind::Encore, tag("encore")),
         ))
         .parse(i)
     })?
