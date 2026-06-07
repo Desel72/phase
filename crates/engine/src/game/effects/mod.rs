@@ -84,6 +84,7 @@ pub mod explore;
 pub mod extra_turn;
 pub mod fight;
 pub mod flip_coin;
+pub mod forage;
 pub mod force_attack;
 pub mod force_block;
 pub mod gain_control;
@@ -2022,11 +2023,7 @@ pub fn resolve_effect(
         Effect::Learn => learn::resolve(state, ability, events),
         Effect::BlightEffect { .. } => blight::resolve(state, ability, events),
         Effect::Endure { .. } => endure::resolve(state, ability, events),
-        Effect::Forage => {
-            // This keyword action is recognized by the parser but not yet implemented.
-            // It's a no-op at runtime but counts as supported for coverage.
-            Ok(())
-        }
+        Effect::Forage => forage::resolve(state, ability, events),
         Effect::CollectEvidence { .. } => collect_evidence::resolve(state, ability, events),
         Effect::SetLifeTotal { .. } => life::resolve_set_life_total(state, ability, events),
         Effect::ExchangeLifeWithStat { .. } => exchange_life::resolve(state, ability, events),

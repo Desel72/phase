@@ -7382,7 +7382,7 @@ pub enum Effect {
     },
     /// CR 701.48a: Learn — you may discard a card to draw a card, or get a Lesson from outside the game.
     Learn,
-    /// CR 702.166a: Forage — exile three cards from your graveyard or sacrifice a Food.
+    /// CR 701.61a: Forage — exile three cards from your graveyard or sacrifice a Food.
     Forage,
     /// CR 702.163a: Collect evidence N — exile cards with total mana value N or more from graveyard.
     CollectEvidence {
