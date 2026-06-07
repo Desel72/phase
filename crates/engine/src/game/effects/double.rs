@@ -71,8 +71,13 @@ fn resolve_double_counters(
         };
 
         // CR 701.10e: Add N more of each counter type where N = current count.
+        // CR 614.1: doubling is a "put counters" event, so route it through the
+        // AddCounter replacement pipeline (Doubling Season / Vorinclex / Hardened
+        // Scales / counter prevention), matching the specific-type
+        // `MultiplyCounter` path (`counters::resolve_multiply`). The raw
+        // `apply_counter_addition` primitive bypassed replacements.
         for (ct, current_count) in counters_snapshot {
-            super::counters::apply_counter_addition(
+            super::counters::add_counter_with_replacement(
                 state,
                 ability.controller,
                 obj_id,
@@ -256,10 +261,13 @@ fn resolve_player_target(ability: &ResolvedAbility, target: &TargetFilter) -> Pl
 mod tests {
     use super::*;
     use crate::game::game_object::GameObject;
-    use crate::types::ability::{AbilityKind, SpellContext};
+    use crate::types::ability::{
+        AbilityKind, QuantityModification, ReplacementDefinition, SpellContext,
+    };
     use crate::types::counter::CounterType;
     use crate::types::identifiers::{CardId, ObjectId};
     use crate::types::player::PlayerId;
+    use crate::types::replacements::ReplacementEvent;
     use crate::types::zones::Zone;
 
     fn make_double_ability(
@@ -393,6 +401,67 @@ mod tests {
                 .copied()
                 .unwrap_or(0),
             2
+        );
+    }
+
+    /// CR 701.10e + CR 614.1a: doubling counters is a "put counters" event, so it
+    /// must pass through the AddCounter replacement pipeline - a Doubling-Season /
+    /// Vorinclex / Hardened Scales class effect applies to the counters the
+    /// doubling adds. With a doubling replacement in play, doubling 4 +1/+1
+    /// counters adds 4 -> replaced to 8 -> total 12 (Vorel of the Hull Clade under
+    /// Doubling Season). The raw `apply_counter_addition` path bypassed the
+    /// pipeline and produced 8.
+    #[test]
+    fn double_counters_applies_addcounter_replacement() {
+        let mut state = GameState::default();
+        let obj_id = ObjectId(1);
+        let mut obj = GameObject::new(
+            obj_id,
+            CardId(0),
+            PlayerId(0),
+            "Vorel".into(),
+            Zone::Battlefield,
+        );
+        obj.counters.insert(CounterType::Plus1Plus1, 4);
+        state.objects.insert(obj_id, obj);
+        state.battlefield.push_back(obj_id);
+
+        // Doubling-Season fixture: a permanent carrying an AddCounter replacement
+        // that doubles the count (avoids depending on a specific card).
+        let doubler_id = ObjectId(2);
+        let mut doubler = GameObject::new(
+            doubler_id,
+            CardId(1),
+            PlayerId(0),
+            "Counter Doubler".into(),
+            Zone::Battlefield,
+        );
+        let mut repl = ReplacementDefinition::new(ReplacementEvent::AddCounter);
+        repl.valid_card = Some(TargetFilter::Any);
+        repl.quantity_modification = Some(QuantityModification::Double);
+        doubler.replacement_definitions.push(repl);
+        state.objects.insert(doubler_id, doubler);
+        state.battlefield.push_back(doubler_id);
+
+        let mut events = Vec::new();
+        let ability = make_double_ability(
+            DoubleTarget::Counters { counter_type: None },
+            TargetFilter::Any,
+            PlayerId(0),
+            vec![TargetRef::Object(obj_id)],
+        );
+
+        resolve(&mut state, &ability, &mut events).unwrap();
+
+        // 4 base + (4 added, doubled to 8) = 12.
+        assert_eq!(
+            state.objects[&obj_id]
+                .counters
+                .get(&CounterType::Plus1Plus1)
+                .copied()
+                .unwrap_or(0),
+            12,
+            "doubling must route adds through the AddCounter replacement pipeline"
         );
     }
 
