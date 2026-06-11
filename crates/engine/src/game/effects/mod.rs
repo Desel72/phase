@@ -1272,6 +1272,7 @@ fn should_resolve_subability_on_optional_decline(ability: &ResolvedAbility) -> b
             | AbilityCondition::HasCityBlessing
             | AbilityCondition::TargetHasKeywordInstead { .. }
             | AbilityCondition::TargetMatchesFilter { .. }
+            | AbilityCondition::TriggeringSpellTargetsFilter { .. }
             | AbilityCondition::SourceMatchesFilter { .. }
             | AbilityCondition::ZoneChangeObjectMatchesFilter { .. }
             | AbilityCondition::ControllerControlsMatching { .. }
@@ -5437,6 +5438,18 @@ pub(crate) fn evaluate_condition(
             };
             matched
         }
+        // CR 608.2c + CR 603.2: "if it targets a [filter]" — check the triggering
+        // spell's committed targets (Flurry on Shiko and Narset, Unified).
+        AbilityCondition::TriggeringSpellTargetsFilter { filter } => state
+            .current_trigger_event
+            .as_ref()
+            .and_then(|event| match event {
+                crate::types::events::GameEvent::SpellCast { object_id, .. } => Some(*object_id),
+                _ => None,
+            })
+            .is_some_and(|spell_id| {
+                super::restrictions::triggering_spell_targets_filter(state, spell_id, filter)
+            }),
         // CR 608.2c: "If this creature/permanent is a [type]" — check source object.
         AbilityCondition::SourceMatchesFilter { filter } => {
             // CR 107.3a + CR 601.2b: ability-context filter evaluation.
