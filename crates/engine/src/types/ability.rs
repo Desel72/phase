@@ -5054,6 +5054,8 @@ pub const REMOVE_COUNTER_COST_ALL: u32 = u32::MAX - 1;
 /// Sentinel for "any number of" remove-counter costs. This still requires a
 /// count choice, but is distinct from literal `X` for parser/data clarity.
 pub const REMOVE_COUNTER_COST_ANY_NUMBER: u32 = u32::MAX - 2;
+/// Sentinel for literal `X` in exile costs that use the compact numeric count.
+pub const EXILE_COST_X: u32 = u32::MAX;
 
 pub fn is_x_remove_counter_cost_count(count: u32) -> bool {
     count == REMOVE_COUNTER_COST_X
