@@ -137,6 +137,7 @@ mod issue_2894_spymasters_vault_connive;
 mod issue_2908_weathered_wayfarer;
 mod issue_2914_shiko_flurry_target_gate;
 mod issue_2915_alexios;
+mod issue_2916_torment_repeat_unless;
 mod issue_2929_arc_trail_any_other_target;
 mod issue_2938_deflecting_swat;
 mod issue_2940_krark_thumbless;

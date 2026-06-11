@@ -1043,6 +1043,8 @@ fn waits_for_resolution_choice(waiting_for: &WaitingFor) -> bool {
             | WaitingFor::MultiTargetSelection { .. }
             | WaitingFor::ReplacementChoice { .. }
             | WaitingFor::OptionalEffectChoice { .. }
+            | WaitingFor::UnlessPayment { .. }
+            | WaitingFor::UnlessPaymentChooseCost { .. }
             | WaitingFor::PairChoice { .. }
             | WaitingFor::OpponentMayChoice { .. }
             | WaitingFor::TributeChoice { .. }
@@ -2818,6 +2820,61 @@ fn has_member_driven_repeat_after_hydration(state: &GameState, ability: &Resolve
     has_member_driven_repeat(&ability_with_event_context_targets(state, ability))
 }
 
+/// CR 608.2c + CR 609.3: True when a counted repeat loop must wrap scoped
+/// and/or unless-pay instructions (Torment of Hailfire — "Repeat X times.
+/// Each opponent loses 3 life unless …"). The repeat count is the outermost
+/// process; `player_scope` and `unless_pay` resolve inside each iteration.
+fn repeat_for_outermost_with_scope_or_unless(ability: &ResolvedAbility) -> bool {
+    ability.repeat_for.is_some()
+        && !has_kind_driven_repeat(ability)
+        && !has_member_driven_repeat(ability)
+        && (ability.player_scope.is_some() || ability.unless_pay.is_some())
+}
+
+/// CR 609.3: Drive a `repeat_for` loop whose iterations each run the full
+/// `resolve_chain_body` (scoped fan-out + unless-pay + effect) with
+/// `repeat_for` cleared so the inner pass does not re-enter this driver.
+fn drive_repeat_for_outermost(
+    state: &mut GameState,
+    ability: &ResolvedAbility,
+    events: &mut Vec<GameEvent>,
+    depth: u32,
+) -> Result<(), EffectError> {
+    let hydrated = hydrate_event_context_targets(state, ability);
+    let effective = hydrated.as_ref();
+    let base_iterations = if let Some(ref qty) = effective.repeat_for {
+        crate::game::quantity::resolve_quantity_with_targets(state, qty, effective).max(0) as usize
+    } else {
+        1
+    };
+
+    let initial_waiting_for = state.waiting_for.clone();
+    let mut iteration = 0usize;
+    while iteration < base_iterations {
+        let mut iter_ability = effective.clone();
+        iter_ability.repeat_for = None;
+        resolve_chain_body(state, &iter_ability, events, depth)?;
+        if state.waiting_for != initial_waiting_for {
+            let next_iteration = iteration + 1;
+            if next_iteration < base_iterations {
+                let mut resume = effective.clone();
+                resume.repeat_for = None;
+                state.pending_repeat_iteration =
+                    Some(crate::types::game_state::PendingRepeatIteration {
+                        ability: Box::new(resume),
+                        tracked_members: Vec::new(),
+                        iterated_counter_kinds: Vec::new(),
+                        next_iteration,
+                        total_iterations: base_iterations,
+                    });
+            }
+            break;
+        }
+        iteration += 1;
+    }
+    Ok(())
+}
+
 fn rebind_iterated_counter_kind(
     ability: &mut ResolvedAbility,
     kind: crate::types::counter::CounterType,
@@ -3545,6 +3602,12 @@ fn resolve_chain_body(
         Cow::Borrowed(ability)
     };
     let ability = ability.as_ref();
+
+    if repeat_for_outermost_with_scope_or_unless(ability)
+        && !has_member_driven_repeat_after_hydration(state, ability)
+    {
+        return drive_repeat_for_outermost(state, ability, events, depth);
+    }
 
     // CR 608.2: player_scope iteration — when an ability has player_scope set,
     // execute the scoped instruction once per matching player. Runtime keeps
