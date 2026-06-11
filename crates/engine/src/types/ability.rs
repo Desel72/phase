@@ -12048,6 +12048,11 @@ pub enum ReplacementCondition {
     /// a source controlled by the specified player relative to the replacement source.
     /// Used by "an opponent controls causes you to discard this card" replacement effects.
     EventSourceControlledBy { controller: ControllerRef },
+    /// CR 614.1a + CR 701.9a: Replacement applies only when the discard was caused
+    /// by resolving a spell or ability effect, not by paying a cost or by a
+    /// turn-based action (cleanup hand-size discard). Used by Library of Leng
+    /// ("If an effect causes you to discard a card...").
+    EffectCausedDiscard,
     /// CR 500.7 + CR 614.10: Replacement applies only when the triggering
     /// event is an *extra* turn (granted by an effect, not a natural turn).
     /// Used by Stranglehold ("If a player would begin an extra turn...").

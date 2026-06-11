@@ -7595,6 +7595,46 @@ mod tests {
     }
 
     #[test]
+    fn library_of_leng_parses_hand_size_static_and_discard_replacement() {
+        use crate::types::ability::{ControllerRef, Effect, ReplacementMode, TypedFilter};
+        use crate::types::replacements::ReplacementEvent;
+        use crate::types::statics::StaticMode;
+
+        let r = parse(
+            "You have no maximum hand size.\nIf an effect causes you to discard a card, discard it, but you may put it on top of your library instead of into your graveyard.",
+            "Library of Leng",
+            &[],
+            &["Artifact"],
+            &[],
+        );
+        assert!(r.abilities.is_empty());
+        assert_eq!(r.statics.len(), 1);
+        assert_eq!(r.statics[0].mode, StaticMode::NoMaximumHandSize);
+        assert_eq!(r.replacements.len(), 1);
+        let repl = &r.replacements[0];
+        assert_eq!(repl.event, ReplacementEvent::Discard);
+        assert!(matches!(
+            repl.mode,
+            ReplacementMode::Optional { decline: None }
+        ));
+        assert_eq!(
+            repl.valid_card,
+            Some(crate::types::ability::TargetFilter::Typed(
+                TypedFilter::default().controller(ControllerRef::You)
+            ))
+        );
+        assert_eq!(
+            repl.condition,
+            Some(crate::types::ability::ReplacementCondition::EffectCausedDiscard)
+        );
+        let execute = repl.execute.as_ref().expect("replacement execute");
+        assert!(matches!(
+            *execute.effect,
+            Effect::PutAtLibraryPosition { .. }
+        ));
+    }
+
+    #[test]
     fn block_restriction_routes_to_static_parser() {
         let r = parse(
             "This creature can block only creatures with flying.",

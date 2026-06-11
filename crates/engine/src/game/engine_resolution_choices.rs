@@ -858,7 +858,9 @@ pub(super) fn handle_resolution_choice(
                         ));
                     }
                     if let effects::discard::DiscardOutcome::NeedsReplacementChoice(choice_player) =
-                        effects::discard::discard_as_cost(state, card_id, player, events)
+                        effects::discard::discard_caused_by_effect_with_source(
+                            state, card_id, player, None, events,
+                        )
                     {
                         let draw = ResolvedAbility::new(
                             crate::types::ability::Effect::Draw {
@@ -2247,7 +2249,7 @@ pub(super) fn handle_resolution_choice(
             let events_before_effect = events.len();
             for &card_id in &chosen {
                 if let effects::discard::DiscardOutcome::NeedsReplacementChoice(choice_player) =
-                    effects::discard::discard_as_cost_with_source(
+                    effects::discard::discard_caused_by_effect_with_source(
                         state,
                         card_id,
                         player,

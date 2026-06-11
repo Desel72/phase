@@ -3134,6 +3134,13 @@ fn evaluate_replacement_condition(
                 | ControllerRef::TriggeringPlayer => false,
             }
         }
+        ReplacementCondition::EffectCausedDiscard => matches!(
+            event,
+            ProposedEvent::Discard {
+                caused_by_effect: true,
+                ..
+            }
+        ),
         // CR 500.7 + CR 614.10: Replacement applies only for extra turns.
         // Checks the event's `is_extra_turn` flag directly; returns `false` for
         // any non-`BeginTurn` event so a misattached `OnlyExtraTurn` doesn't
