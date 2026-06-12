@@ -199,6 +199,15 @@ fn self_recursion_trigger_zone(
         } if destination.is_none_or(|zone| zone == Zone::Hand) => {
             parse_self_return_origin_zone(source_lower)
         }
+        // CR 603.10a + CR 603.7a: A trigger whose effect schedules a delayed
+        // self-return ("return this card from your graveyard ... at the
+        // beginning of the next end step", Prized Amalgam) fires while the
+        // source is in that origin zone — so the origin zone of the delayed
+        // trigger's inner self-return is the firing zone. Descend into the
+        // carried effect to surface it.
+        crate::types::ability::Effect::CreateDelayedTrigger { effect, .. } => {
+            self_recursion_trigger_zone(effect, source_lower)
+        }
         _ => ability
             .sub_ability
             .as_deref()
@@ -2512,7 +2521,10 @@ fn static_condition_to_trigger_condition(sc: &StaticCondition) -> Option<Trigger
 
         // CR 601.2 + CR 611.3a: "as long as it was cast" — 1:1 bridge to the
         // trigger-side cast-origin check (same `cast_from_zone` field).
-        StaticCondition::WasCast { zone } => Some(TriggerCondition::WasCast { zone: *zone }),
+        StaticCondition::WasCast { zone } => Some(TriggerCondition::WasCast {
+            zone: *zone,
+            controller: None,
+        }),
 
         // CR 702.176a + CR 603.4: Impending's battlefield trigger checks the
         // persistent alternative-cost marker, not whether it was paid this turn.
@@ -2702,6 +2714,67 @@ fn static_condition_to_trigger_condition(sc: &StaticCondition) -> Option<Trigger
     }
 }
 
+/// CR 603.4 + CR 601.2 + CR 603.2c + CR 603.10a: Build the disjunctive
+/// "entered-from-graveyard OR cast-from-graveyard" intervening-if.
+///
+/// The entering object either changed zones into the battlefield from a
+/// graveyard (`ZoneChangeObjectMatchesFilter`) or was a spell cast from a
+/// graveyard (`WasCast`). `owner` carries the graveyard's owner scope: "your
+/// graveyard" (Prized Amalgam) restricts the entered-from filter to objects you
+/// own; "a graveyard" (any graveyard) leaves it unrestricted.
+fn graveyard_origin_or_condition(owner: Option<ControllerRef>) -> TriggerCondition {
+    let filter = match owner {
+        Some(ref controller) => with_owner_scope(TargetFilter::Any, controller.clone()),
+        None => TargetFilter::Any,
+    };
+    TriggerCondition::Or {
+        conditions: vec![
+            TriggerCondition::ZoneChangeObjectMatchesFilter {
+                origin: Some(Zone::Graveyard),
+                destination: Zone::Battlefield,
+                filter,
+            },
+            TriggerCondition::WasCast {
+                zone: Some(Zone::Graveyard),
+                controller: owner,
+            },
+        ],
+    }
+}
+
+/// CR 603.4 + CR 603.10a: Recognize the "entered/was-cast from graveyard"
+/// disjunctive intervening-if as a single nom combinator covering the whole
+/// class — both the compact "a graveyard" form (Twilight Diviner) and the
+/// owner-scoped "your graveyard" form with an explicit "you cast it" arm
+/// (Prized Amalgam). Returns the parsed condition; the caller excises the
+/// matched clause from the effect text.
+///
+/// Grammar (subject anaphor × graveyard-origin disjunction):
+///   "if " ( "it " | "they " )
+///   ( <compact-form> | <split-your-form> )
+/// where
+///   <compact-form>     = "entered or " ( "was" | "were" ) " cast from a graveyard"
+///   <split-your-form>  = "entered from your graveyard or you cast it from your graveyard"
+fn parse_graveyard_origin_intervening_if(input: &str) -> OracleResult<'_, TriggerCondition> {
+    let (rest, _) = tag("if ").parse(input)?;
+    let (rest, _) = alt((tag("it "), tag("they "))).parse(rest)?;
+    // Compact "a graveyard" form: "entered or (was|were) cast from a graveyard".
+    let compact = map(
+        (
+            tag("entered or "),
+            alt((tag("was"), tag("were"))),
+            tag(" cast from a graveyard"),
+        ),
+        |_| graveyard_origin_or_condition(None),
+    );
+    // Owner-scoped "your graveyard" form with an explicit "you cast it" arm.
+    let split_your = map(
+        tag("entered from your graveyard or you cast it from your graveyard"),
+        |_| graveyard_origin_or_condition(Some(ControllerRef::You)),
+    );
+    alt((compact, split_your)).parse(rest)
+}
+
 /// Extract an intervening-if condition from effect text.
 /// Returns (cleaned effect text, optional condition).
 ///
@@ -2751,34 +2824,28 @@ fn extract_if_condition(text: &str) -> (String, Option<TriggerCondition>) {
         if !after.starts_with(" from") {
             return (
                 strip_condition_clause(text, pos, "if you cast it".len()),
-                Some(TriggerCondition::WasCast { zone: None }),
+                Some(TriggerCondition::WasCast {
+                    zone: None,
+                    controller: None,
+                }),
             );
         }
     }
 
-    // CR 603.4 + CR 601.2 + CR 603.2c: "if it/they entered or w(as|ere) cast from a graveyard"
-    // allow-noncombinator: structural if-clause excision, not parse dispatch
-    for pattern in &[
-        "if they entered or were cast from a graveyard",
-        "if it entered or was cast from a graveyard",
-    ] {
-        if let Some(pos) = tp.find(pattern) {
-            return (
-                strip_condition_clause(text, pos, pattern.len()),
-                Some(TriggerCondition::Or {
-                    conditions: vec![
-                        TriggerCondition::ZoneChangeObjectMatchesFilter {
-                            origin: Some(Zone::Graveyard),
-                            destination: Zone::Battlefield,
-                            filter: TargetFilter::Any,
-                        },
-                        TriggerCondition::WasCast {
-                            zone: Some(Zone::Graveyard),
-                        },
-                    ],
-                }),
-            );
-        }
+    // CR 603.4 + CR 601.2 + CR 603.2c + CR 603.10a: disjunctive
+    // "entered/was-cast from [a|your] graveyard" intervening-if. Scan at word
+    // boundaries so the clause is recognized wherever it sits in the effect
+    // text; `parse_graveyard_origin_intervening_if` covers both the compact
+    // "a graveyard" form and the owner-scoped "your graveyard" form (Prized
+    // Amalgam) as one combinator.
+    if let Some((prefix, condition, rest)) =
+        scan_preceded(&lower, parse_graveyard_origin_intervening_if)
+    {
+        let clause_len = lower.len() - prefix.len() - rest.len();
+        return (
+            strip_condition_clause(text, prefix.len(), clause_len),
+            Some(condition),
+        );
     }
 
     // CR 603.4 + CR 601.2: "if none of them were cast or no mana was spent to cast them" —
@@ -2791,7 +2858,10 @@ fn extract_if_condition(text: &str) -> (String, Option<TriggerCondition>) {
             Some(TriggerCondition::Or {
                 conditions: vec![
                     TriggerCondition::Not {
-                        condition: Box::new(TriggerCondition::WasCast { zone: None }),
+                        condition: Box::new(TriggerCondition::WasCast {
+                            zone: None,
+                            controller: None,
+                        }),
                     },
                     TriggerCondition::ManaSpentCondition {
                         text: "no mana was spent to cast them".to_string(),
@@ -2827,7 +2897,10 @@ fn extract_if_condition(text: &str) -> (String, Option<TriggerCondition>) {
     if let Some(pos) = was_cast_pos {
         return (
             strip_condition_clause(text, pos, "if it was cast".len()),
-            Some(TriggerCondition::WasCast { zone: None }),
+            Some(TriggerCondition::WasCast {
+                zone: None,
+                controller: None,
+            }),
         );
     }
 
@@ -2836,7 +2909,10 @@ fn extract_if_condition(text: &str) -> (String, Option<TriggerCondition>) {
         return (
             strip_condition_clause(text, pos, "if it wasn't cast".len()),
             Some(TriggerCondition::Not {
-                condition: Box::new(TriggerCondition::WasCast { zone: None }),
+                condition: Box::new(TriggerCondition::WasCast {
+                    zone: None,
+                    controller: None,
+                }),
             }),
         );
     }
@@ -25450,7 +25526,10 @@ mod tests {
                 assert_eq!(
                     conditions[0],
                     TriggerCondition::Not {
-                        condition: Box::new(TriggerCondition::WasCast { zone: None }),
+                        condition: Box::new(TriggerCondition::WasCast {
+                            zone: None,
+                            controller: None,
+                        }),
                     }
                 );
                 assert!(
@@ -25480,7 +25559,10 @@ mod tests {
         assert_eq!(
             def.condition,
             Some(TriggerCondition::Not {
-                condition: Box::new(TriggerCondition::WasCast { zone: None }),
+                condition: Box::new(TriggerCondition::WasCast {
+                    zone: None,
+                    controller: None,
+                }),
             })
         );
     }
@@ -28445,7 +28527,8 @@ mod snapshot_tests {
                 assert_eq!(
                     conditions[1],
                     TriggerCondition::WasCast {
-                        zone: Some(Zone::Graveyard)
+                        zone: Some(Zone::Graveyard),
+                        controller: None
                     }
                 );
             }
@@ -28473,7 +28556,8 @@ mod snapshot_tests {
                 assert_eq!(
                     conditions[1],
                     TriggerCondition::WasCast {
-                        zone: Some(Zone::Graveyard)
+                        zone: Some(Zone::Graveyard),
+                        controller: None
                     }
                 );
             }
@@ -28486,7 +28570,8 @@ mod snapshot_tests {
 mod slicer_control_handoff_tests {
     use crate::parser::oracle::parse_oracle_text;
     use crate::types::ability::{
-        AbilityDefinition, ControllerRef, Effect, EffectScope, TapStateChange, TargetFilter,
+        AbilityDefinition, ControllerRef, Effect, EffectScope, FilterProp, TapStateChange,
+        TargetFilter,
     };
     use crate::types::TriggerMode;
 
@@ -28687,5 +28772,97 @@ mod slicer_control_handoff_tests {
             "ExileTop player must be TriggeringPlayer (the damaged player), got {:?}",
             exile_player
         );
+    }
+
+    /// CR 603.10 + CR 603.4 (issue #2861): Prized Amalgam is a graveyard-zone
+    /// delayed-return trigger. It fires from the graveyard whenever *another*
+    /// creature enters, gated by the intervening-if "if it entered from your
+    /// graveyard or you cast it from your graveyard". The parser must:
+    ///   1. set `trigger_zones = [Graveyard]` (the source is in the graveyard
+    ///      when it fires — NOT the battlefield default), and
+    ///   2. attach the graveyard-origin intervening-if condition (not `None`).
+    #[test]
+    fn prized_amalgam_graveyard_origin_intervening_if() {
+        use crate::types::ability::TriggerCondition;
+        use crate::types::Zone;
+        let parsed = parse_oracle_text(
+            "Whenever a creature enters, if it entered from your graveyard or \
+             you cast it from your graveyard, return this card from your graveyard \
+             to the battlefield tapped at the beginning of the next end step.",
+            "Prized Amalgam",
+            &[],
+            &["Creature".into()],
+            &["Zombie".into()],
+        );
+        let def = parsed
+            .triggers
+            .iter()
+            .find(|t| matches!(t.mode, TriggerMode::ChangesZone))
+            .expect("ChangesZone trigger must parse");
+        // (1) graveyard-zone trigger: the source lives in the graveyard.
+        assert!(
+            def.trigger_zones.contains(&Zone::Graveyard),
+            "trigger must fire from the graveyard, got trigger_zones={:?}",
+            def.trigger_zones
+        );
+        assert!(
+            !def.trigger_zones.contains(&Zone::Battlefield),
+            "trigger must NOT fire from the battlefield, got trigger_zones={:?}",
+            def.trigger_zones
+        );
+        // (2) graveyard-origin intervening-if must be preserved (not dropped).
+        let condition = def
+            .condition
+            .as_ref()
+            .expect("graveyard-origin intervening-if must be parsed, got condition=None");
+        // Must reference the graveyard origin (entered-from or cast-from).
+        fn references_graveyard_origin(c: &TriggerCondition) -> bool {
+            match c {
+                TriggerCondition::ZoneChangeObjectMatchesFilter {
+                    origin: Some(Zone::Graveyard),
+                    ..
+                } => true,
+                TriggerCondition::WasCast {
+                    zone: Some(Zone::Graveyard),
+                    ..
+                } => true,
+                TriggerCondition::Or { conditions } | TriggerCondition::And { conditions } => {
+                    conditions.iter().any(references_graveyard_origin)
+                }
+                TriggerCondition::Not { condition } => references_graveyard_origin(condition),
+                _ => false,
+            }
+        }
+        assert!(
+            references_graveyard_origin(condition),
+            "condition must gate on graveyard origin, got {condition:?}"
+        );
+        match condition {
+            TriggerCondition::Or { conditions } => {
+                assert!(
+                    matches!(
+                        &conditions[0],
+                        TriggerCondition::ZoneChangeObjectMatchesFilter {
+                            filter: TargetFilter::Typed(typed),
+                            ..
+                        } if typed.properties.contains(&FilterProp::Owned {
+                            controller: ControllerRef::You
+                        })
+                    ),
+                    "entered-from-your-graveyard branch must be owner-scoped to you, got {condition:?}"
+                );
+                assert!(
+                    matches!(
+                        &conditions[1],
+                        TriggerCondition::WasCast {
+                            zone: Some(Zone::Graveyard),
+                            controller: Some(ControllerRef::You),
+                        }
+                    ),
+                    "cast-from-your-graveyard branch must be caster-scoped to you, got {condition:?}"
+                );
+            }
+            other => panic!("expected Or condition, got {other:?}"),
+        }
     }
 }
