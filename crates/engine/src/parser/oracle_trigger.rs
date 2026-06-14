@@ -20726,6 +20726,20 @@ mod tests {
     }
 
     #[test]
+    fn trigger_ring_tempts_you_draws_card() {
+        let def = parse_trigger_line("Whenever the Ring tempts you, draw a card.", "Ring Watcher");
+        assert_eq!(def.mode, TriggerMode::RingTemptsYou);
+        assert!(
+            def.execute.is_some(),
+            "draw effect must lower onto the trigger execute slot"
+        );
+        assert!(matches!(
+            def.execute.as_ref().unwrap().effect.as_ref(),
+            Effect::Draw { .. }
+        ));
+    }
+
+    #[test]
     fn trigger_ring_tempts_you_when() {
         let def = parse_trigger_line(
             "When the Ring tempts you, return this card from your graveyard to your hand.",
