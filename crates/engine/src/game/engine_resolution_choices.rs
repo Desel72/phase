@@ -2664,13 +2664,29 @@ pub(super) fn handle_resolution_choice(
                         ));
                     };
                     let ability = *cont.chain;
-                    effects::cast_from_zone::grant_lingering_permissions(
-                        &mut *state,
-                        &ability,
-                        &chosen,
-                        events,
-                    )
-                    .map_err(|e| EngineError::InvalidAction(e.to_string()))?;
+                    if chosen.len() == 1 {
+                        let used_during_resolution =
+                            effects::cast_from_zone::complete_hand_pick_cast_from_zone(
+                                &mut *state,
+                                &ability,
+                                chosen[0],
+                                events,
+                            )
+                            .map_err(|e| EngineError::InvalidAction(e.to_string()))?;
+                        if used_during_resolution {
+                            return Ok(ResolutionChoiceOutcome::WaitingFor(
+                                state.waiting_for.clone(),
+                            ));
+                        }
+                    } else {
+                        effects::cast_from_zone::grant_lingering_permissions(
+                            &mut *state,
+                            &ability,
+                            &chosen,
+                            events,
+                        )
+                        .map_err(|e| EngineError::InvalidAction(e.to_string()))?;
+                    }
                 }
                 // CR 701.68a: Place `count_param` -1/-1 counters on the creature
                 // the controller chose. The choice is non-targeted; the pool was

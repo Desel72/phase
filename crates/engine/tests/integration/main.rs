@@ -92,6 +92,7 @@ mod integration_adventure;
 mod integration_bending;
 mod integration_landfall;
 mod invoke_calamity_free_cast;
+mod issue_1025_rishkars_expertise;
 mod issue_1202_prepared_spell_cast_timing;
 mod issue_1206_shelob_spider_death_tokens;
 mod issue_1297_venture_initiative_triggers;
