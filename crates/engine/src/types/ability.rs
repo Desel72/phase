@@ -3441,6 +3441,10 @@ pub enum CastManaObjectScope {
     SelfObject,
     /// The spell object referenced by the current trigger event.
     TriggeringSpell,
+    /// CR 115.1 + CR 601.2h: The first object target of the resolving ability —
+    /// "it"/"that spell" when the condition gates on the targeted spell
+    /// (Nix: "Counter target spell if no mana was spent to cast it").
+    AbilityTarget,
 }
 
 /// CR 106.3 + CR 601.2h: What to measure about mana spent to cast a spell.

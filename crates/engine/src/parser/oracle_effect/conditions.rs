@@ -18,9 +18,10 @@ use super::super::oracle_util::{parse_comparison_suffix, parse_subtype, TextPair
 use super::{parse_effect_chain, scan_contains_phrase, ParseContext};
 use crate::parser::oracle_ir::diagnostic::OracleDiagnostic;
 use crate::types::ability::{
-    AbilityCondition, AbilityDefinition, AbilityKind, CastVariantPaid, Comparator, ControllerRef,
-    CountScope, Duration, Effect, FilterProp, ObjectScope, ParsedCondition, PlayerScope,
-    QuantityExpr, QuantityRef, StaticCondition, TargetFilter, TypeFilter, TypedFilter,
+    AbilityCondition, AbilityDefinition, AbilityKind, CastManaObjectScope, CastManaSpentMetric,
+    CastVariantPaid, Comparator, ControllerRef, CountScope, Duration, Effect, FilterProp,
+    ObjectScope, ParsedCondition, PlayerScope, QuantityExpr, QuantityRef, StaticCondition,
+    TargetFilter, TypeFilter, TypedFilter,
 };
 use crate::types::card_type::{CoreType, Supertype};
 use crate::types::counter::{CounterMatch, CounterType};
@@ -1732,6 +1733,10 @@ pub(super) fn strip_suffix_conditional(
         return (Some(cond), effect_text);
     }
 
+    if let Some(cond) = parse_no_mana_spent_to_cast_target_condition_text(condition_core) {
+        return (Some(cond), effect_text);
+    }
+
     if let Some(condition) = parse_triggering_spell_targets_filter_ability_condition(condition_core)
         .or_else(|| try_nom_condition_as_ability_condition(condition_core, ctx))
         .or_else(|| parse_condition_text(condition_core))
@@ -1764,8 +1769,43 @@ pub(super) fn parse_quantity_comparison(text: &str) -> Option<(Comparator, Quant
     None
 }
 
+/// CR 601.2h + CR 608.2c: "if no mana was spent to cast it/that spell" on a
+/// targeted spell effect — the "it" anaphors to the ability's object target
+/// (Nix, Defabricate-class riders).
+fn parse_no_mana_spent_to_cast_target_condition_text(text: &str) -> Option<AbilityCondition> {
+    let lower = text.to_ascii_lowercase();
+    nom_parse_lower(&lower, |input| {
+        all_consuming(parse_no_mana_spent_to_cast_target_condition).parse(input)
+    })
+}
+
+fn parse_no_mana_spent_to_cast_target_condition(input: &str) -> OracleResult<'_, AbilityCondition> {
+    let (rest, _) = (
+        tag("no mana was spent to cast "),
+        alt((tag("it"), tag("that spell"), tag("this spell"), tag("them"))),
+    )
+        .parse(input)?;
+    Ok((
+        rest,
+        AbilityCondition::QuantityCheck {
+            lhs: QuantityExpr::Ref {
+                qty: QuantityRef::ManaSpentToCast {
+                    scope: CastManaObjectScope::AbilityTarget,
+                    metric: CastManaSpentMetric::Total,
+                },
+            },
+            comparator: Comparator::EQ,
+            rhs: QuantityExpr::Fixed { value: 0 },
+        },
+    ))
+}
+
 pub(super) fn parse_condition_text(text: &str) -> Option<AbilityCondition> {
     let text = text.trim().trim_end_matches('.');
+
+    if let Some(condition) = parse_no_mana_spent_to_cast_target_condition_text(text) {
+        return Some(condition);
+    }
 
     if let Some(condition) = parse_you_control_urza_land_types_condition_text(text) {
         return Some(condition);
@@ -4164,6 +4204,33 @@ mod tests {
     use super::*;
     use crate::parser::oracle_nom::condition::parse_inner_condition;
     use crate::types::counter::{CounterMatch, CounterType};
+
+    #[test]
+    fn parse_no_mana_spent_to_cast_target_condition_reads_ability_target_mana() {
+        let cond =
+            parse_no_mana_spent_to_cast_target_condition_text("no mana was spent to cast it")
+                .expect("should parse target no-mana-spent condition");
+        assert!(matches!(
+            cond,
+            AbilityCondition::QuantityCheck {
+                lhs: QuantityExpr::Ref {
+                    qty: QuantityRef::ManaSpentToCast {
+                        scope: CastManaObjectScope::AbilityTarget,
+                        metric: CastManaSpentMetric::Total,
+                    },
+                },
+                comparator: Comparator::EQ,
+                rhs: QuantityExpr::Fixed { value: 0 },
+            }
+        ));
+
+        let (cond, text) = strip_suffix_conditional(
+            "Counter target spell if no mana was spent to cast it",
+            &mut ParseContext::default(),
+        );
+        assert_eq!(text, "Counter target spell");
+        assert!(matches!(cond, Some(AbilityCondition::QuantityCheck { .. })));
+    }
 
     /// CR 508.1a: filtered attack-history condition — "you attacked with <X>"
     /// resolves to a QuantityCheck over the (optionally filtered) AttackedThisTurn
