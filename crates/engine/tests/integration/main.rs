@@ -220,6 +220,7 @@ mod issue_3260_phantasmal_image_persist;
 mod issue_3283_sevinne_reclamation_copy_no_self_copy;
 mod issue_3285_face_down_public_zone;
 mod issue_3295_scrapwork_mutt_unearth_zone;
+mod issue_3297_rite_token_abilities;
 mod issue_3299_syr_konrad_duplicate_damage;
 mod issue_3301_izzet_charm_counter;
 mod issue_3302_breach_multiverse;
