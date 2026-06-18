@@ -3089,6 +3089,18 @@ pub(super) fn extract_double_counter_multi_target(text: &str) -> Option<MultiTar
     multi_target
 }
 
+/// CR 115.1d + CR 122.1: Recover `MultiTargetSpec` for "remove … from each of
+/// any number of <type>". The imperative parser strips the distribution prefix
+/// so `parse_type_phrase` sees a bare filter; rebuild the spec from the
+/// original text (parallel to `extract_switch_pt_multi_target`).
+pub(super) fn extract_remove_counter_multi_target(text: &str) -> Option<MultiTargetSpec> {
+    let lower = text.to_lowercase();
+    if strip_after(&lower, "from each of any number of ").is_some() {
+        return Some(MultiTargetSpec::unlimited(0));
+    }
+    None
+}
+
 fn parse_each_of_up_to_damage_target<'a>(
     target_phrase: &'a str,
     ctx: &mut ParseContext,
