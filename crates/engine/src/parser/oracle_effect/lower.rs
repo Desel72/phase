@@ -25,9 +25,9 @@ use crate::parser::oracle_ir::effect_chain::{ClauseIr, EffectChainIr, SpecialCla
 use crate::types::ability::{
     AbilityCondition, AbilityCost, AbilityDefinition, AbilityKind, AttackScope, AttackSubject,
     CastFromZoneDriver, Comparator, ContinuousModification, ControllerRef, DamageSource,
-    DelayedTriggerCondition, Duration, Effect, EffectScope, FilterProp, MultiTargetSpec,
-    ObjectScope, PlayerFilter, PreventionAmount, PreventionScope, PtValue, QuantityExpr,
-    QuantityRef, RoundingMode, StaticCondition, StaticDefinition, SubAbilityLink,
+    DelayedTriggerCondition, Duration, Effect, EffectScope, FilterProp, LibraryPosition,
+    MultiTargetSpec, ObjectScope, PlayerFilter, PreventionAmount, PreventionScope, PtValue,
+    QuantityExpr, QuantityRef, RoundingMode, StaticCondition, StaticDefinition, SubAbilityLink,
     TargetChoiceTiming, TargetFilter, TypeFilter, TypedFilter,
 };
 use crate::types::counter::CounterType;
@@ -62,6 +62,90 @@ fn rewrite_player_anaphor_targets_in_definition(def: &mut AbilityDefinition) {
     }
     if let Some(else_ability) = def.else_ability.as_deref_mut() {
         rewrite_player_anaphor_targets_in_definition(else_ability);
+    }
+}
+
+/// CR 608.2c + CR 401.4: After an optional `CastFromZone` from a linked-exile
+/// pool (Sanwell, Chaos Wand class), a trailing "put the rest / put the exiled
+/// cards … on the bottom" clause must route uncards still linked to the source
+/// through `ExiledBySource`, not a `TrackedSet` of library cards.
+pub(super) fn normalize_linked_exile_cast_bottom_cleanup(effect: &mut Effect) {
+    if let Effect::PutAtLibraryPosition {
+        ref mut target,
+        ref mut count,
+        position,
+    } = effect
+    {
+        if matches!(position, LibraryPosition::Bottom) {
+            *target = TargetFilter::ExiledBySource;
+            *count = QuantityExpr::Fixed { value: 0 };
+        }
+    }
+}
+
+pub(super) fn is_linked_exile_cast_bottom_cleanup(
+    cast_effect: &Effect,
+    cleanup_effect: &Effect,
+) -> bool {
+    let Effect::CastFromZone { target, .. } = cast_effect else {
+        return false;
+    };
+    let Effect::PutAtLibraryPosition {
+        target: cleanup_target,
+        position,
+        ..
+    } = cleanup_effect
+    else {
+        return false;
+    };
+    matches!(position, LibraryPosition::Bottom)
+        && (target.references_exiled_by_source() || cleanup_target.references_exiled_by_source())
+}
+
+#[cfg(test)]
+mod linked_exile_cleanup_tests {
+    use super::*;
+
+    fn cast_from_zone(target: TargetFilter) -> Effect {
+        Effect::CastFromZone {
+            target,
+            without_paying_mana_cost: false,
+            mode: crate::types::ability::CardPlayMode::Cast,
+            cast_transformed: false,
+            alt_ability_cost: None,
+            constraint: None,
+            duration: None,
+            driver: CastFromZoneDriver::LingeringPermission,
+        }
+    }
+
+    fn bottom_cleanup() -> Effect {
+        Effect::PutAtLibraryPosition {
+            target: TargetFilter::Any,
+            count: QuantityExpr::Fixed { value: 1 },
+            position: LibraryPosition::Bottom,
+        }
+    }
+
+    #[test]
+    fn linked_exile_cleanup_accepts_cast_target_or_cleanup_target_exile_link() {
+        let mut cleanup = bottom_cleanup();
+
+        assert!(is_linked_exile_cast_bottom_cleanup(
+            &cast_from_zone(TargetFilter::ExiledBySource),
+            &cleanup
+        ));
+        if let Effect::PutAtLibraryPosition { ref mut target, .. } = cleanup {
+            *target = TargetFilter::ExiledBySource;
+        }
+        assert!(is_linked_exile_cast_bottom_cleanup(
+            &cast_from_zone(TargetFilter::ParentTarget),
+            &cleanup
+        ));
+        assert!(!is_linked_exile_cast_bottom_cleanup(
+            &cast_from_zone(TargetFilter::Any),
+            &bottom_cleanup()
+        ));
     }
 }
 
@@ -825,16 +909,8 @@ pub(crate) fn lower_effect_chain_ir(ir: &EffectChainIr) -> AbilityDefinition {
             // dedicated clause builders that construct sub-abilities directly
             // (e.g., `try_parse_pump_with_damage_sub` at line 3220).
             chain.kind = AbilityKind::Spell;
-            if prev.optional
-                && matches!(*prev.effect, Effect::CastFromZone { .. })
-                && matches!(
-                    *chain.effect,
-                    Effect::PutAtLibraryPosition {
-                        target: TargetFilter::ExiledBySource,
-                        ..
-                    }
-                )
-            {
+            if prev.optional && is_linked_exile_cast_bottom_cleanup(&prev.effect, &chain.effect) {
+                normalize_linked_exile_cast_bottom_cleanup(&mut chain.effect);
                 prev.else_ability = Some(Box::new(chain.clone()));
             }
             if prev.sub_ability.is_some() {
