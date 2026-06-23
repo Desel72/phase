@@ -324,6 +324,7 @@ mod issue_3660_paradigm_multiple_offers;
 mod issue_3665_smugglers_share;
 mod issue_3681_inferno_titan_divided_damage;
 mod issue_3817_sheoldred_apocalypse;
+mod issue_3862_ulvenwald_tracker_fight;
 mod issue_3864_swords_two_targets;
 mod issue_3869_pentad_prism_mana;
 mod issue_3871_summoners_pact;
