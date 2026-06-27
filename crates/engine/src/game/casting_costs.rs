@@ -7687,6 +7687,7 @@ pub fn finalize_mana_payment(
         .pending_cast
         .take()
         .ok_or_else(|| EngineError::InvalidAction("No pending cast to finalize".to_string()))?;
+    let pending_for_restore = pending.clone();
 
     // CR 118.3a: `pending_cast` is now gone, but the caster's pin hints must
     // still reach the spend. Carry them on the transient `active_payment_pins`
@@ -7836,7 +7837,16 @@ pub fn finalize_mana_payment(
     })();
     // CR 118.3a: the transient is self-contained — cleared on Ok and Err alike.
     state.active_payment_pins.clear();
-    finalize_result
+    match finalize_result {
+        Ok(waiting_for) => Ok(waiting_for),
+        Err(err) => {
+            // CR 601.2h: A failed Pay attempt must not consume the pending cast —
+            // the caster remains in the mana-payment window and may tap more
+            // convoke sources or CancelCast (issue #4379).
+            state.pending_cast = Some(pending_for_restore);
+            Err(err)
+        }
+    }
 }
 
 fn stamp_convoked_creatures(
@@ -7869,6 +7879,7 @@ pub fn finalize_mana_payment_with_phyrexian_choices(
         .pending_cast
         .take()
         .ok_or_else(|| EngineError::InvalidAction("No pending cast to finalize".to_string()))?;
+    let pending_for_restore = pending.clone();
 
     // CR 118.3a: `pending_cast` is now gone, but the caster's pin hints must
     // still reach the spend. Carry them on the transient `active_payment_pins`
@@ -8019,7 +8030,16 @@ pub fn finalize_mana_payment_with_phyrexian_choices(
     })();
     // CR 118.3a: the transient is self-contained — cleared on Ok and Err alike.
     state.active_payment_pins.clear();
-    finalize_result
+    match finalize_result {
+        Ok(waiting_for) => Ok(waiting_for),
+        Err(err) => {
+            // CR 601.2h: A failed Pay attempt must not consume the pending cast —
+            // the caster remains in the mana-payment window and may tap more
+            // convoke sources or CancelCast (issue #4379).
+            state.pending_cast = Some(pending_for_restore);
+            Err(err)
+        }
+    }
 }
 
 /// CR 107.4f + CR 601.2f: Determine whether this cast needs to pause for per-shard
