@@ -36127,6 +36127,51 @@ mod tests {
         );
     }
 
+    #[test]
+    fn strip_temporal_suffix_next_cleanup_step() {
+        let (text, cond) = strip_temporal_suffix(
+            "remove a +1/+1 counter from that creature at the beginning of the next cleanup step",
+        );
+        assert_eq!(text, "remove a +1/+1 counter from that creature");
+        assert_eq!(
+            cond,
+            Some(DelayedTriggerCondition::AtNextPhase {
+                phase: Phase::Cleanup,
+            })
+        );
+    }
+
+    #[test]
+    fn bounty_of_the_hunt_schedules_cleanup_counter_removal() {
+        use crate::types::ability::AbilityKind;
+
+        let def = parse_effect_chain(
+            "Distribute three +1/+1 counters among one, two, or three target creatures. For each +1/+1 counter you put on a creature this way, remove a +1/+1 counter from that creature at the beginning of the next cleanup step.",
+            AbilityKind::Spell,
+        );
+        let sub = def
+            .sub_ability
+            .as_ref()
+            .expect("cleanup removal sub-ability");
+        match &*sub.effect {
+            Effect::CreateDelayedTrigger {
+                condition, effect, ..
+            } => {
+                assert_eq!(
+                    *condition,
+                    DelayedTriggerCondition::AtNextPhase {
+                        phase: Phase::Cleanup,
+                    }
+                );
+                match &*effect.effect {
+                    Effect::RemoveCounter { .. } => {}
+                    other => panic!("expected RemoveCounter, got {other:?}"),
+                }
+            }
+            other => panic!("expected CreateDelayedTrigger sub-ability, got {other:?}"),
+        }
+    }
+
     /// CR 603.7a: #638 Arcane Denial — "the next turn's upkeep" is the
     /// natural-language equivalent of "the next upkeep" and must produce the
     /// same `AtNextPhase { Upkeep }` delayed trigger. Covers the ~15-card

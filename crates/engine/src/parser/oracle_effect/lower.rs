@@ -3570,6 +3570,14 @@ pub(super) fn strip_temporal_suffix(text: &str) -> (&str, Option<DelayedTriggerC
                 player: crate::types::player::PlayerId(0),
             },
         ),
+        // CR 514.3a + CR 603.7a: "at the beginning of the next cleanup step"
+        // (Bounty of the Hunt and the class of temporary-counter effects).
+        (
+            " at the beginning of the next cleanup step",
+            DelayedTriggerCondition::AtNextPhase {
+                phase: Phase::Cleanup,
+            },
+        ),
     ] {
         if lower.ends_with(suffix) {
             let end = text.len() - suffix.len();
@@ -3671,6 +3679,13 @@ pub(super) fn strip_temporal_prefix(text: &str) -> (&str, Option<DelayedTriggerC
                     phase: Phase::EndCombat,
                 },
                 tag("at end of combat, "),
+            ),
+            // CR 514.3a + CR 603.7a: "at the beginning of the next cleanup step, "
+            value(
+                DelayedTriggerCondition::AtNextPhase {
+                    phase: Phase::Cleanup,
+                },
+                tag("at the beginning of the next cleanup step, "),
             ),
         ))
         .parse(i)
