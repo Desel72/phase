@@ -1221,6 +1221,11 @@ pub(crate) fn lower_effect_chain_ir(ir: &EffectChainIr) -> AbilityDefinition {
     // and coin flip conditional branches into their parent FlipCoin.
     consolidate_die_and_coin_defs(&mut defs, kind);
 
+    // CR 609.7a + CR 608.2c: Desperate Gambit — a preceding
+    // `ChooseDamageSource` makes bare "it" in the lose-branch one-shot prevention
+    // refer to the chosen source, not `SelfRef` (the instant on the stack).
+    thread_chosen_damage_source_into_oneshot_effects(&mut defs);
+
     // Chain: last has no sub_ability, each earlier one chains to next.
     // When a def already has a sub_ability (e.g., TargetOnly with attached Explore),
     // append to the deepest sub rather than overwriting.
@@ -2086,6 +2091,76 @@ fn effect_publishes_revealed_subject(effect: &Effect) -> bool {
 /// `ChangeZone` is included because Inalla-style "Exile it at the beginning
 /// of the next end step" lowers to `ChangeZone { destination: Exile,
 /// target: ParentTarget }`.
+fn definition_contains_choose_damage_source(def: &AbilityDefinition) -> bool {
+    if matches!(&*def.effect, Effect::ChooseDamageSource { .. }) {
+        return true;
+    }
+    def.sub_ability
+        .as_deref()
+        .is_some_and(definition_contains_choose_damage_source)
+        || def
+            .else_ability
+            .as_deref()
+            .is_some_and(definition_contains_choose_damage_source)
+}
+
+/// CR 609.7a + CR 608.2c: When a resolution chain begins with
+/// `ChooseDamageSource`, bare "it" in a coin-flip one-shot prevention branch
+/// co-refers with the chosen source — rewrite `SelfRef` to `ChosenDamageSource`.
+fn rewrite_oneshot_selfref_to_chosen_in_effect(effect: &mut Effect) {
+    match effect {
+        Effect::PreventDamage {
+            damage_source_filter,
+            ..
+        } if matches!(damage_source_filter, Some(TargetFilter::SelfRef)) => {
+            *damage_source_filter = Some(TargetFilter::ChosenDamageSource);
+        }
+        Effect::CreateDamageReplacement { source_filter, .. }
+            if matches!(source_filter, Some(TargetFilter::SelfRef)) =>
+        {
+            *source_filter = Some(TargetFilter::ChosenDamageSource);
+        }
+        Effect::FlipCoin {
+            win_effect,
+            lose_effect,
+            ..
+        } => {
+            if let Some(win) = win_effect.as_deref_mut() {
+                rewrite_oneshot_selfref_to_chosen_in_def(win);
+            }
+            if let Some(lose) = lose_effect.as_deref_mut() {
+                rewrite_oneshot_selfref_to_chosen_in_def(lose);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_oneshot_selfref_to_chosen_in_def(def: &mut AbilityDefinition) {
+    rewrite_oneshot_selfref_to_chosen_in_effect(&mut def.effect);
+    if let Some(sub) = def.sub_ability.as_deref_mut() {
+        rewrite_oneshot_selfref_to_chosen_in_def(sub);
+    }
+    if let Some(else_def) = def.else_ability.as_deref_mut() {
+        rewrite_oneshot_selfref_to_chosen_in_def(else_def);
+    }
+}
+
+fn thread_chosen_damage_source_into_oneshot_effects(defs: &mut [AbilityDefinition]) {
+    if !defs.iter().any(definition_contains_choose_damage_source) {
+        return;
+    }
+    for def in defs.iter_mut() {
+        rewrite_oneshot_selfref_to_chosen_in_effect(&mut def.effect);
+        if let Some(sub) = def.sub_ability.as_deref_mut() {
+            rewrite_oneshot_selfref_to_chosen_in_def(sub);
+        }
+        if let Some(else_def) = def.else_ability.as_deref_mut() {
+            rewrite_oneshot_selfref_to_chosen_in_def(else_def);
+        }
+    }
+}
+
 pub(super) fn rewrite_parent_target_to_last_created(effect: &mut Effect) {
     match effect {
         Effect::Sacrifice { target, .. }
