@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use super::*;
@@ -1265,6 +1266,7 @@ fn broadside_bombardiers_boast_activates_after_attacking_and_requires_sacrifice(
         player: PlayerId(0),
         valid_attacker_ids: vec![bombardiers],
         valid_attack_targets: vec![AttackTarget::Player(PlayerId(1))],
+        valid_attack_targets_by_attacker: HashMap::new(),
     };
     apply_as_current(
         &mut state,
@@ -1761,6 +1763,7 @@ fn concede_owner_of_waiting_for_advances_state() {
         player: PlayerId(1),
         valid_attacker_ids: vec![],
         valid_attack_targets: vec![],
+        valid_attack_targets_by_attacker: HashMap::new(),
     };
 
     let result = apply_as_current(
@@ -5026,6 +5029,7 @@ fn setup_tempest_hawk_attack(library_hawk_ids: &[u64]) -> (GameState, ObjectId, 
         player: PlayerId(0),
         valid_attacker_ids: vec![attacker],
         valid_attack_targets: vec![AttackTarget::Player(PlayerId(1))],
+        valid_attack_targets_by_attacker: HashMap::new(),
     };
 
     apply_as_current(

@@ -15,6 +15,7 @@ import { PeekTab } from "../modal/DialogShell.tsx";
 
 interface AttackTargetPickerProps {
   validTargets: AttackTarget[];
+  validTargetsByAttacker?: Record<string, AttackTarget[]>;
   selectedAttackers: ObjectId[];
   onConfirm: (attacks: [ObjectId, AttackTarget][]) => void;
   onCancel: () => void;
@@ -29,6 +30,7 @@ interface AttackTargetPickerProps {
  */
 export function AttackTargetPicker({
   validTargets,
+  validTargetsByAttacker,
   selectedAttackers,
   onConfirm,
   onCancel,
@@ -48,6 +50,10 @@ export function AttackTargetPicker({
 
   const teamBased = gameState?.format_config?.team_based ?? false;
 
+  function targetsForCreature(creatureId: ObjectId): AttackTarget[] {
+    return validTargetsByAttacker?.[String(creatureId)] ?? validTargets;
+  }
+
   const sortedTargets = useMemo(() => {
     if (!seatOrder) return validTargets;
     return [...validTargets].sort((a, b) => {
@@ -56,6 +62,13 @@ export function AttackTargetPicker({
       return aIdx - bIdx;
     });
   }, [validTargets, seatOrder]);
+  const commonTargets = useMemo(
+    () => sortedTargets.filter((target) =>
+      selectedAttackers.every((id) =>
+        targetsForCreature(id).some((candidate) => sameAttackTarget(candidate, target))),
+    ),
+    [selectedAttackers, sortedTargets, validTargetsByAttacker],
+  );
 
   function getTargetLabel(target: AttackTarget): string {
     if (target.type === "Player") {
@@ -79,7 +92,7 @@ export function AttackTargetPicker({
 
   function handleSplitConfirm() {
     const attacks: [ObjectId, AttackTarget][] = selectedAttackers.map((id) => {
-      const target = perCreatureTargets.get(id) ?? validTargets[0];
+      const target = perCreatureTargets.get(id) ?? targetsForCreature(id)[0] ?? validTargets[0];
       return [id, target];
     });
     onConfirm(attacks);
@@ -175,7 +188,7 @@ export function AttackTargetPicker({
             <div className="flex flex-col gap-3">
               {/* Bulk-assign buttons */}
               <div className="flex flex-wrap justify-center gap-1.5">
-                {sortedTargets.map((target) => {
+                {commonTargets.map((target) => {
                   const color = getTargetSeatColor(target);
                   return (
                     <button
@@ -200,7 +213,8 @@ export function AttackTargetPicker({
               <div className="flex max-h-[50vh] flex-col gap-1 overflow-y-auto">
                 {selectedAttackers.map((creatureId) => {
                   const obj = gameState?.objects[creatureId];
-                  const currentTarget = perCreatureTargets.get(creatureId) ?? validTargets[0];
+                  const creatureTargets = targetsForCreature(creatureId);
+                  const currentTarget = perCreatureTargets.get(creatureId) ?? creatureTargets[0] ?? validTargets[0];
                   const counters = objectCounterChips(obj);
                   const ptLabel = objectPtLabel(obj);
                   return (
@@ -233,7 +247,7 @@ export function AttackTargetPicker({
                         )}
                       </div>
                       <TargetDropdown
-                        targets={sortedTargets}
+                        targets={creatureTargets}
                         currentTarget={currentTarget}
                         getLabel={getTargetLabel}
                         getColor={getTargetSeatColor}
@@ -283,6 +297,10 @@ function objectCounterChips(obj: GameObject | undefined): Array<{ type: string; 
 /** Stable key for an AttackTarget. */
 function attackTargetKey(target: AttackTarget): string {
   return `${target.type}-${target.data}`;
+}
+
+function sameAttackTarget(a: AttackTarget, b: AttackTarget): boolean {
+  return a.type === b.type && a.data === b.data;
 }
 
 function RestoreTab({ onClick }: { onClick: () => void }) {

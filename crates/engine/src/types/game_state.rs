@@ -2975,6 +2975,8 @@ pub enum WaitingFor {
         valid_attacker_ids: Vec<ObjectId>,
         #[serde(default)]
         valid_attack_targets: Vec<crate::game::combat::AttackTarget>,
+        #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+        valid_attack_targets_by_attacker: HashMap<ObjectId, Vec<crate::game::combat::AttackTarget>>,
     },
     DeclareBlockers {
         player: PlayerId,
@@ -9025,6 +9027,7 @@ mod tests {
             player: PlayerId(0),
             valid_attacker_ids: vec![],
             valid_attack_targets: vec![],
+            valid_attack_targets_by_attacker: HashMap::new(),
         }));
         variants.push(Box::new(WaitingFor::DeclareBlockers {
             player: PlayerId(0),

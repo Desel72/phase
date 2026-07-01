@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::game::casting;
 use crate::game::combat::AttackTarget;
@@ -705,7 +705,14 @@ pub fn candidate_actions_broad(state: &GameState) -> Vec<CandidateAction> {
             player,
             valid_attacker_ids,
             valid_attack_targets,
-        } => attacker_actions(state, *player, valid_attacker_ids, valid_attack_targets),
+            valid_attack_targets_by_attacker,
+        } => attacker_actions(
+            state,
+            *player,
+            valid_attacker_ids,
+            valid_attack_targets,
+            valid_attack_targets_by_attacker,
+        ),
         WaitingFor::DeclareBlockers {
             player,
             valid_blocker_ids,
@@ -3521,6 +3528,7 @@ fn attacker_actions(
     player: PlayerId,
     valid_attacker_ids: &[crate::types::identifiers::ObjectId],
     valid_attack_targets: &[AttackTarget],
+    valid_attack_targets_by_attacker: &HashMap<ObjectId, Vec<AttackTarget>>,
 ) -> Vec<CandidateAction> {
     // CR 508.1a: declaring no attackers is a structurally legal submission. The
     // engine's combat-requirement check rejects it at apply time only when a
@@ -3536,7 +3544,7 @@ fn attacker_actions(
         Some(player),
     )];
 
-    if valid_attack_targets.is_empty() {
+    if valid_attack_targets.is_empty() && valid_attack_targets_by_attacker.is_empty() {
         return actions;
     }
 
@@ -3548,7 +3556,11 @@ fn attacker_actions(
     // target is the goader, collapsing the legal-action set to empty and
     // hanging the game.
     for &id in valid_attacker_ids {
-        for &target in valid_attack_targets {
+        let attacker_targets = valid_attack_targets_by_attacker
+            .get(&id)
+            .map(Vec::as_slice)
+            .unwrap_or(valid_attack_targets);
+        for &target in attacker_targets {
             actions.push(candidate(
                 GameAction::DeclareAttackers {
                     attacks: vec![(id, target)],
@@ -3564,7 +3576,18 @@ fn attacker_actions(
     // Offer one per target so goad on a lone attacker doesn't make the only
     // all-in candidate illegal.
     if valid_attacker_ids.len() > 1 {
-        for &target in valid_attack_targets {
+        let common_targets: Vec<AttackTarget> = valid_attack_targets
+            .iter()
+            .copied()
+            .filter(|target| {
+                valid_attacker_ids.iter().all(|id| {
+                    valid_attack_targets_by_attacker
+                        .get(id)
+                        .is_none_or(|targets| targets.contains(&target))
+                })
+            })
+            .collect();
+        for &target in &common_targets {
             actions.push(candidate(
                 GameAction::DeclareAttackers {
                     attacks: valid_attacker_ids
@@ -3630,7 +3653,10 @@ fn attacker_actions(
             let must_attack_players =
                 crate::game::combat::must_attack_players_for_creature(state, obj);
             let goaders = crate::game::combat::goading_players_for_creature(state, id);
-            valid_attack_targets
+            valid_attack_targets_by_attacker
+                .get(&id)
+                .map(Vec::as_slice)
+                .unwrap_or(valid_attack_targets)
                 .iter()
                 .copied()
                 // CR 508.1b: honor a directed MustAttackPlayer requirement first.
@@ -3640,13 +3666,24 @@ fn attacker_actions(
                 // CR 701.15b "if able": otherwise steer away from this creature's
                 // goader.
                 .or_else(|| {
-                    valid_attack_targets.iter().copied().find(|target| match target {
-                        AttackTarget::Player(pid) => !goaders.contains(pid),
-                        _ => true,
-                    })
+                    valid_attack_targets_by_attacker
+                        .get(&id)
+                        .map(Vec::as_slice)
+                        .unwrap_or(valid_attack_targets)
+                        .iter()
+                        .copied()
+                        .find(|target| match target {
+                            AttackTarget::Player(pid) => !goaders.contains(pid),
+                            _ => true,
+                        })
                 })
                 // Fall back to any valid target when no constraint can be honored.
-                .or_else(|| valid_attack_targets.first().copied())
+                .or_else(|| {
+                    valid_attack_targets_by_attacker
+                        .get(&id)
+                        .and_then(|targets| targets.first().copied())
+                        .or_else(|| valid_attack_targets.first().copied())
+                })
                 .map(|target| (id, target))
         })
         .collect();
@@ -4846,7 +4883,7 @@ mod tests {
         let targets = vec![AttackTarget::Player(PlayerId(1))];
 
         crate::game::perf_counters::reset();
-        let _ = attacker_actions(&state, PlayerId(0), &ids, &targets);
+        let _ = attacker_actions(&state, PlayerId(0), &ids, &targets, &HashMap::new());
         let snap = crate::game::perf_counters::snapshot();
 
         assert_eq!(
@@ -5113,6 +5150,7 @@ mod tests {
                     crate::types::identifiers::ObjectId(2),
                 ],
                 valid_attack_targets: vec![AttackTarget::Player(PlayerId(1))],
+                valid_attack_targets_by_attacker: HashMap::new(),
             },
             ..GameState::new_two_player(42)
         };
@@ -5145,6 +5183,7 @@ mod tests {
                 // The goading player is deliberately first: the pre-fix generator
                 // would only ever offer this single (illegal-under-goad) pairing.
                 valid_attack_targets: vec![goader, other_a, other_b],
+                valid_attack_targets_by_attacker: HashMap::new(),
             },
             ..GameState::new_two_player(42)
         };
@@ -5213,6 +5252,7 @@ mod tests {
                 AttackTarget::Player(PlayerId(1)),
                 AttackTarget::Player(PlayerId(2)),
             ],
+            valid_attack_targets_by_attacker: HashMap::new(),
         };
 
         let actions = candidate_actions(&state);
@@ -5288,6 +5328,7 @@ mod tests {
                 AttackTarget::Player(PlayerId(2)),
                 AttackTarget::Player(PlayerId(1)),
             ],
+            valid_attack_targets_by_attacker: HashMap::new(),
         };
 
         let actions = candidate_actions(&state);

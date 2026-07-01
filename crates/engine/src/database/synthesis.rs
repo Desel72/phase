@@ -15461,6 +15461,8 @@ mod annihilator_runtime_tests {
 
 #[cfg(test)]
 mod myriad_runtime_tests {
+    use std::collections::HashMap;
+
     use super::*;
     use crate::game::combat::AttackTarget;
     use crate::game::effects::become_copy;
@@ -15514,6 +15516,7 @@ mod myriad_runtime_tests {
             player: PlayerId(0),
             valid_attacker_ids: vec![],
             valid_attack_targets: vec![],
+            valid_attack_targets_by_attacker: HashMap::new(),
         };
 
         let card_id = CardId(state.next_object_id);

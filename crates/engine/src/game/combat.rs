@@ -2902,68 +2902,12 @@ pub fn has_summoning_sickness(obj: &GameObject) -> bool {
 /// CR 508.1a / CR 302.6: Untapped creature controlled since turn started, without Defender.
 /// CR 702.26b: Phased-out creatures can't attack.
 pub fn get_valid_attacker_ids(state: &GameState) -> Vec<ObjectId> {
-    let active = state.active_player;
-    // CR 604.1: hoist the combat-restriction existence gates once before the
-    // per-permanent scan (collapses O(N^2) to O(N)).
     let gates = CombatStaticGates::compute(state);
+    let broad_targets = get_valid_attack_targets(state);
 
-    state
-        .battlefield_phased_in_ids()
-        .iter()
-        .filter_map(|id| {
-            let obj = state.objects.get(id)?;
-            if obj.controller == active
-                && obj.card_types.core_types.contains(&CoreType::Creature)
-                && !obj.tapped
-                && (!obj.has_keyword(&Keyword::Defender)
-                    || super::functioning_abilities::active_static_definitions(state, obj)
-                        .any(|sd| sd.mode == StaticMode::CanAttackWithDefender)
-                    || (gates.has_can_attack_with_defender
-                        && crate::game::static_abilities::check_static_ability(
-                            state,
-                            StaticMode::CanAttackWithDefender,
-                            &crate::game::static_abilities::StaticCheckContext {
-                                target_id: Some(*id),
-                                ..Default::default()
-                            },
-                        )))
-                && !super::functioning_abilities::active_static_definitions(state, obj).any(|sd| {
-                    matches!(
-                        sd.mode,
-                        StaticMode::CantAttack | StaticMode::CantAttackOrBlock
-                    ) && sd.attack_defended.is_none()
-                })
-                // CR 508.1 + CR 101.2 + CR 109.5: remote CantAttack statics
-                // (Angelic Arbiter restricting opponents' creatures) resolved via
-                // the shared `check_static_ability` building block.
-                && !(gates.has_cant_attack
-                    && crate::game::static_abilities::check_static_ability(
-                        state,
-                        StaticMode::CantAttack,
-                        &crate::game::static_abilities::StaticCheckContext {
-                            target_id: Some(*id),
-                            ..Default::default()
-                        },
-                    ))
-                && !(gates.has_cant_attack_or_block
-                    && crate::game::static_abilities::check_static_ability(
-                        state,
-                        StaticMode::CantAttackOrBlock,
-                        &crate::game::static_abilities::StaticCheckContext {
-                            target_id: Some(*id),
-                            ..Default::default()
-                        },
-                    ))
-                // CR 302.6: delegate to the single authority for summoning
-                // sickness — folds in Haste at query time without duplicating
-                // the flag/keyword logic here.
-                && !has_summoning_sickness(obj)
-            {
-                Some(*id)
-            } else {
-                None
-            }
-        })
+    valid_attack_targets_by_attacker_gated(state, &broad_targets, &gates)
+        .into_iter()
+        .map(|(id, _)| id)
         .collect()
 }
 
@@ -2979,17 +2923,21 @@ pub fn get_valid_attacker_ids(state: &GameState) -> Vec<ObjectId> {
 pub fn refresh_combat_declaration_waiting_for(state: &mut GameState) {
     match &state.waiting_for {
         crate::types::game_state::WaitingFor::DeclareAttackers { .. } => {
-            // CR 508.1a: Mirror turns.rs:1369-1370 — rebuild both payload fields.
+            // CR 508.1a: Mirror turns.rs:1369-1372 — rebuild the attacker and
+            // target payloads from the live legality queries.
             let valid_attacker_ids = get_valid_attacker_ids(state);
             let valid_attack_targets = get_valid_attack_targets(state);
+            let valid_attack_targets_by_attacker = get_valid_attack_targets_by_attacker(state);
             if let crate::types::game_state::WaitingFor::DeclareAttackers {
                 valid_attacker_ids: ids,
                 valid_attack_targets: targets,
+                valid_attack_targets_by_attacker: targets_by_attacker,
                 ..
             } = &mut state.waiting_for
             {
                 *ids = valid_attacker_ids;
                 *targets = valid_attack_targets;
+                *targets_by_attacker = valid_attack_targets_by_attacker;
             }
         }
         crate::types::game_state::WaitingFor::DeclareBlockers { player, .. } => {
@@ -3679,6 +3627,249 @@ pub fn get_valid_attack_targets(state: &GameState) -> Vec<AttackTarget> {
     targets
 }
 
+/// CR 508.1a + CR 508.1c + CR 702.26b: An attacker must be an untapped,
+/// phased-in creature the active player can legally declare as an attacker.
+fn attacker_is_generically_eligible_to_attack(
+    state: &GameState,
+    attacker_id: ObjectId,
+    gates: &CombatStaticGates,
+) -> bool {
+    let Some(obj) = state.objects.get(&attacker_id) else {
+        return false;
+    };
+    obj.controller == state.active_player
+        && obj.zone == Zone::Battlefield
+        && !obj.is_phased_out()
+        && obj.card_types.core_types.contains(&CoreType::Creature)
+        && !obj.tapped
+        && (!obj.has_keyword(&Keyword::Defender)
+            || super::functioning_abilities::active_static_definitions(state, obj)
+                .any(|sd| sd.mode == StaticMode::CanAttackWithDefender)
+            || (gates.has_can_attack_with_defender
+                && crate::game::static_abilities::check_static_ability(
+                    state,
+                    StaticMode::CanAttackWithDefender,
+                    &crate::game::static_abilities::StaticCheckContext {
+                        target_id: Some(attacker_id),
+                        ..Default::default()
+                    },
+                )))
+        && !super::functioning_abilities::active_static_definitions(state, obj).any(|sd| {
+            matches!(
+                sd.mode,
+                StaticMode::CantAttack | StaticMode::CantAttackOrBlock
+            ) && sd.attack_defended.is_none()
+        })
+        && !(gates.has_cant_attack
+            && crate::game::static_abilities::check_static_ability(
+                state,
+                StaticMode::CantAttack,
+                &crate::game::static_abilities::StaticCheckContext {
+                    target_id: Some(attacker_id),
+                    ..Default::default()
+                },
+            ))
+        && !(gates.has_cant_attack_or_block
+            && crate::game::static_abilities::check_static_ability(
+                state,
+                StaticMode::CantAttackOrBlock,
+                &crate::game::static_abilities::StaticCheckContext {
+                    target_id: Some(attacker_id),
+                    ..Default::default()
+                },
+            ))
+        && !has_summoning_sickness(obj)
+}
+
+/// CR 508.1b + CR 508.1c: Each declared attacker must have a legal defending
+/// player or battle after applying scoped attack restrictions.
+fn attack_target_passes_scoped_restrictions(
+    state: &GameState,
+    attacker_id: ObjectId,
+    target: AttackTarget,
+    gates: &CombatStaticGates,
+) -> bool {
+    if (gates.has_cant_attack
+        && crate::game::static_abilities::check_static_ability(
+            state,
+            StaticMode::CantAttack,
+            &crate::game::static_abilities::StaticCheckContext {
+                target_id: Some(attacker_id),
+                attack_target: Some(target),
+                ..Default::default()
+            },
+        ))
+        || (gates.has_cant_attack_or_block
+            && crate::game::static_abilities::check_static_ability(
+                state,
+                StaticMode::CantAttackOrBlock,
+                &crate::game::static_abilities::StaticCheckContext {
+                    target_id: Some(attacker_id),
+                    attack_target: Some(target),
+                    ..Default::default()
+                },
+            ))
+    {
+        return false;
+    }
+
+    let Some(attacker_controller) = state.objects.get(&attacker_id).map(|o| o.controller) else {
+        return false;
+    };
+    for restriction in &state.restrictions {
+        let crate::types::ability::GameRestriction::ProhibitActivity {
+            source,
+            affected_players,
+            activity: crate::types::ability::ProhibitedActivity::Attack { defended },
+            ..
+        } = restriction
+        else {
+            continue;
+        };
+        let Some(protected) = state.objects.get(source).map(|o| o.controller) else {
+            continue;
+        };
+        let attacker_is_affected = match affected_players {
+            crate::types::ability::RestrictionPlayerScope::AllPlayers => true,
+            crate::types::ability::RestrictionPlayerScope::SpecificPlayer(p) => {
+                *p == attacker_controller
+            }
+            crate::types::ability::RestrictionPlayerScope::OpponentsOfSourceController => {
+                attacker_controller != protected
+            }
+            crate::types::ability::RestrictionPlayerScope::TargetedPlayer
+            | crate::types::ability::RestrictionPlayerScope::ParentTargetedPlayer
+            | crate::types::ability::RestrictionPlayerScope::DefendingPlayer
+            | crate::types::ability::RestrictionPlayerScope::ScopedPlayer => false,
+        };
+        if !attacker_is_affected {
+            continue;
+        }
+        if crate::game::restrictions::attack_target_matches_defended_scope(
+            state,
+            Some(&target),
+            defended,
+            protected,
+            protected,
+        ) {
+            return false;
+        }
+    }
+
+    true
+}
+
+/// CR 508.1b + CR 508.1c: Start from globally attackable defenders, then
+/// remove attack targets this creature is individually restricted from
+/// attacking.
+fn base_valid_attack_targets_for_attacker_gated(
+    state: &GameState,
+    attacker_id: ObjectId,
+    broad_targets: &[AttackTarget],
+    gates: &CombatStaticGates,
+) -> Vec<AttackTarget> {
+    if !attacker_is_generically_eligible_to_attack(state, attacker_id, gates) {
+        return Vec::new();
+    }
+
+    broad_targets
+        .iter()
+        .copied()
+        .filter(|target| {
+            attack_target_passes_scoped_restrictions(state, attacker_id, *target, gates)
+        })
+        .collect()
+}
+
+/// CR 508.1d + CR 701.15b: Attack requirements and goad further narrow the
+/// legal defending players for a specific attacker.
+fn valid_attack_targets_for_attacker_from_base(
+    state: &GameState,
+    attacker_id: ObjectId,
+    base_targets: &[AttackTarget],
+    gates: &CombatStaticGates,
+) -> Vec<AttackTarget> {
+    let Some(obj) = state.objects.get(&attacker_id) else {
+        return Vec::new();
+    };
+    let attackable_players: Vec<PlayerId> = base_targets
+        .iter()
+        .filter_map(|target| match target {
+            AttackTarget::Player(pid) => Some(*pid),
+            _ => None,
+        })
+        .collect();
+    let goading_players = goading_players_for_creature_gated(state, attacker_id, gates.has_goad);
+    let has_attackable_non_goading_player = attackable_players
+        .iter()
+        .any(|pid| !goading_players.contains(pid));
+    let required_players: Vec<PlayerId> = must_attack_players_for_creature(state, obj)
+        .into_iter()
+        .filter(|player| attackable_players.contains(player))
+        .collect();
+
+    base_targets
+        .iter()
+        .copied()
+        .filter(|target| {
+            if let AttackTarget::Player(defending_pid) = target {
+                if has_attackable_non_goading_player && goading_players.contains(&defending_pid) {
+                    return false;
+                }
+            }
+            if required_players.is_empty() {
+                return true;
+            }
+            matches!(target, AttackTarget::Player(pid) if required_players.contains(&pid))
+        })
+        .collect()
+}
+
+/// CR 508.1a + CR 508.1b + CR 508.1c + CR 508.1d: Enumerate the legal attack
+/// targets for each attacker during declaration.
+fn valid_attack_targets_by_attacker_gated(
+    state: &GameState,
+    broad_targets: &[AttackTarget],
+    gates: &CombatStaticGates,
+) -> Vec<(ObjectId, Vec<AttackTarget>)> {
+    state
+        .battlefield_phased_in_ids()
+        .iter()
+        .filter_map(|id| {
+            let base_targets =
+                base_valid_attack_targets_for_attacker_gated(state, *id, broad_targets, gates);
+            let targets =
+                valid_attack_targets_for_attacker_from_base(state, *id, &base_targets, gates);
+            (!targets.is_empty()).then_some((*id, targets))
+        })
+        .collect()
+}
+
+/// CR 508.1a + CR 508.1b + CR 508.1c + CR 508.1d: Legal attack targets for
+/// each attacker during declaration.
+pub fn get_valid_attack_targets_by_attacker(
+    state: &GameState,
+) -> HashMap<ObjectId, Vec<AttackTarget>> {
+    let gates = CombatStaticGates::compute(state);
+    let broad_targets = get_valid_attack_targets(state);
+    valid_attack_targets_by_attacker_gated(state, &broad_targets, &gates)
+        .into_iter()
+        .collect()
+}
+
+/// CR 508.1a + CR 508.1b + CR 508.1c + CR 508.1d: Legal attack targets for one
+/// attacker during declaration.
+pub fn get_valid_attack_targets_for_attacker(
+    state: &GameState,
+    attacker_id: ObjectId,
+) -> Vec<AttackTarget> {
+    let gates = CombatStaticGates::compute(state);
+    let broad_targets = get_valid_attack_targets(state);
+    let base_targets =
+        base_valid_attack_targets_for_attacker_gated(state, attacker_id, &broad_targets, &gates);
+    valid_attack_targets_for_attacker_from_base(state, attacker_id, &base_targets, &gates)
+}
+
 /// CR 506.4: A creature stops being an attacker when it leaves the battlefield
 /// or phases out. Attackers that left during the declare-attackers step may
 /// remain listed until pruned.
@@ -4365,6 +4556,7 @@ mod tests {
             player: PlayerId(0),
             valid_attacker_ids: get_valid_attacker_ids(&state),
             valid_attack_targets: get_valid_attack_targets(&state),
+            valid_attack_targets_by_attacker: get_valid_attack_targets_by_attacker(&state),
         };
         match &state.waiting_for {
             WaitingFor::DeclareAttackers {
@@ -4432,6 +4624,7 @@ mod tests {
             player: PlayerId(0),
             valid_attacker_ids: get_valid_attacker_ids(&state),
             valid_attack_targets: get_valid_attack_targets(&state),
+            valid_attack_targets_by_attacker: get_valid_attack_targets_by_attacker(&state),
         };
         match &state.waiting_for {
             WaitingFor::DeclareAttackers {
@@ -7998,6 +8191,62 @@ mod tests {
             &mut vec![],
         );
         assert!(attacks_non_owner.is_ok());
+    }
+
+    #[test]
+    fn valid_attack_targets_by_attacker_filters_scoped_attack_lockouts() {
+        let mut state = setup_multiplayer_combat(3);
+        let attacker = create_creature(&mut state, PlayerId(1), "Owner-Restricted Bear", 2, 2);
+        {
+            let obj = state.objects.get_mut(&attacker).unwrap();
+            obj.controller = PlayerId(0);
+            obj.static_definitions.push(
+                StaticDefinition::new(StaticMode::CantAttack)
+                    .affected(TargetFilter::SelfRef)
+                    .attack_defended(Some(crate::types::triggers::AttackTargetFilter::Owner)),
+            );
+        }
+
+        let global_targets = get_valid_attack_targets(&state);
+        assert_eq!(
+            global_targets,
+            vec![
+                AttackTarget::Player(PlayerId(1)),
+                AttackTarget::Player(PlayerId(2)),
+            ],
+            "global declare-attackers targets still list both opponents"
+        );
+
+        let by_attacker = get_valid_attack_targets_by_attacker(&state);
+        assert_eq!(
+            by_attacker.get(&attacker),
+            Some(&vec![AttackTarget::Player(PlayerId(2))]),
+            "per-attacker targets must exclude the owner-side target this creature can't attack"
+        );
+    }
+
+    #[test]
+    fn valid_attacker_ids_drop_creatures_with_no_legal_attack_target() {
+        let mut state = setup();
+        let attacker = create_creature(&mut state, PlayerId(1), "Stranded Bear", 2, 2);
+        {
+            let obj = state.objects.get_mut(&attacker).unwrap();
+            obj.controller = PlayerId(0);
+            obj.static_definitions.push(
+                StaticDefinition::new(StaticMode::CantAttack)
+                    .affected(TargetFilter::SelfRef)
+                    .attack_defended(Some(crate::types::triggers::AttackTargetFilter::Owner)),
+            );
+        }
+
+        assert!(
+            get_valid_attack_targets_for_attacker(&state, attacker).is_empty(),
+            "the only opponent is this creature's owner, so it has no legal attack target"
+        );
+        assert!(
+            !get_valid_attacker_ids(&state).contains(&attacker),
+            "declare-attackers UI must not surface attackers with no legal target"
+        );
     }
 
     #[test]

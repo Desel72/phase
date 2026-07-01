@@ -9,7 +9,11 @@ import { usePhaseInfo } from "../../hooks/usePhaseInfo.ts";
 import { useGameStore } from "../../stores/gameStore.ts";
 import { useMultiplayerStore } from "../../stores/multiplayerStore.ts";
 import { useUiStore } from "../../stores/uiStore.ts";
-import { buildAttacks, hasMultipleAttackTargets, getValidAttackTargets } from "../../utils/combat.ts";
+import {
+  buildAttacks,
+  getValidAttackTargets,
+  selectedAttackersNeedTargetPicker,
+} from "../../utils/combat.ts";
 import { useBlockRequirements } from "../combat/useBlockRequirements.ts";
 import { gameButtonClass } from "../ui/buttonStyles.ts";
 import { GameplayTooltip } from "../ui/GameplayTooltip.tsx";
@@ -97,8 +101,11 @@ export function ActionButton() {
 
   // Attack target picker visibility (multiplayer)
   const [showTargetPicker, setShowTargetPicker] = useState(false);
-  const isMultiTarget = hasMultipleAttackTargets(gameState);
   const validAttackTargets = getValidAttackTargets(gameState);
+  const validAttackTargetsByAttacker =
+    waitingFor?.type === "DeclareAttackers"
+      ? (waitingFor.data.valid_attack_targets_by_attacker ?? {})
+      : {};
 
   // Reset skip-confirm when mode changes
   useEffect(() => {
@@ -215,7 +222,7 @@ export function ActionButton() {
   }
 
   function handleConfirmAttackers() {
-    if (isMultiTarget) {
+    if (selectedAttackersNeedTargetPicker(gameState, selectedAttackers)) {
       setShowTargetPicker(true);
       return;
     }
@@ -462,6 +469,7 @@ export function ActionButton() {
       {showTargetPicker && (
         <AttackTargetPicker
           validTargets={validAttackTargets}
+          validTargetsByAttacker={validAttackTargetsByAttacker}
           selectedAttackers={selectedAttackers}
           onConfirm={handleTargetPickerConfirm}
           onCancel={() => setShowTargetPicker(false)}
