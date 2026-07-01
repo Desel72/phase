@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { Trans, useTranslation } from "react-i18next";
@@ -50,9 +50,11 @@ export function AttackTargetPicker({
 
   const teamBased = gameState?.format_config?.team_based ?? false;
 
-  function targetsForCreature(creatureId: ObjectId): AttackTarget[] {
-    return validTargetsByAttacker?.[String(creatureId)] ?? validTargets;
-  }
+  const targetsForCreature = useCallback(
+    (creatureId: ObjectId): AttackTarget[] =>
+      validTargetsByAttacker?.[String(creatureId)] ?? validTargets,
+    [validTargetsByAttacker, validTargets],
+  );
 
   const sortedTargets = useMemo(() => {
     if (!seatOrder) return validTargets;
@@ -67,7 +69,7 @@ export function AttackTargetPicker({
       selectedAttackers.every((id) =>
         targetsForCreature(id).some((candidate) => sameAttackTarget(candidate, target))),
     ),
-    [selectedAttackers, sortedTargets, validTargetsByAttacker],
+    [selectedAttackers, sortedTargets, targetsForCreature],
   );
 
   function getTargetLabel(target: AttackTarget): string {
